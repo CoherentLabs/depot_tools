@@ -1278,15 +1278,15 @@ want to set 'managed': False in .gclient.
       url_val = solution.values[url_idx]
       if type(url_val) is not ast.Str:
         continue
-      if (svn_url_re.match(url_val.s.strip())):
-        raise gclient_utils.Error(
-"""
-The chromium code repository has migrated completely to git.
-Your SVN-based checkout is now obsolete; you need to create a brand-new
-git checkout by following these instructions:
-
-http://www.chromium.org/developers/how-tos/get-the-code
-""")
+#      if (svn_url_re.match(url_val.s.strip())):
+        #raise gclient_utils.Error(
+#"""
+#The chromium code repository has migrated completely to git.
+#Your SVN-based checkout is now obsolete; you need to create a brand-new
+#git checkout by following these instructions:
+#
+#http://www.chromium.org/developers/how-tos/get-the-code
+#""")
       if (old_git_re.match(url_val.s.strip())):
         url_val.s = CHROMIUM_SRC_URL
         modified = True
