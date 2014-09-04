@@ -43,22 +43,23 @@ goto :EOF
 
 
 :GIT_UPDATE
-cd /d "%DEPOT_TOOLS_DIR%."
-call git config remote.origin.fetch > NUL
-if errorlevel 1 goto :GIT_SVN_UPDATE
-for /F %%x in ('git config --get remote.origin.url') DO (
-  IF not "%%x" == "%GIT_URL%" (
-    echo Your depot_tools checkout is configured to fetch from an obsolete URL
-    choice /N /T 60 /D N /M "Would you like to update it? [y/N]: "
-    IF not errorlevel 2 (
-      call git config remote.origin.url "%GIT_URL%"
-    )
-  )
-)
-call git fetch -q origin > NUL
-call git rebase -q origin/master > NUL
-if errorlevel 1 echo Failed to update depot_tools.
-
+::COHERENT START - Disable updates of depot tools
+::cd /d "%DEPOT_TOOLS_DIR%."
+::call git config remote.origin.fetch > NUL
+::if errorlevel 1 goto :GIT_SVN_UPDATE
+::for /F %%x in ('git config --get remote.origin.url') DO (
+::  IF not "%%x" == "%GIT_URL%" (
+::     echo Your depot_tools checkout is configured to fetch from an obsolete URL
+::    choice /N /T 60 /D N /M "Would you like to update it? [y/N]: "
+::    IF not errorlevel 2 (
+::      call git config remote.origin.url "%GIT_URL%"
+::    )
+::  )
+::)
+::call git fetch -q origin > NUL
+::call git rebase -q origin/master > NUL
+::if errorlevel 1 echo Failed to update depot_tools.
+::COHERENT END -
 goto :EOF
 
 :GIT_SVN_UPDATE

@@ -82,42 +82,44 @@ function is_git_clone_repo {
 }
 
 function update_git_repo {
-  remote_url=$(eval "$GIT" config --get remote.origin.url)
-  if [ -n "$remote_url" -a "$remote_url" != "$CANONICAL_GIT_URL" ]; then
-    echo "Your copy of depot_tools is configured to fetch from an obsolete URL:"
-    echo
-    echo "  $remote_url"
-    echo
-    read -t 60 -p "OK to update it to $CANONICAL_GIT_URL ? [Y/n] " -n 1
-    STATUS=$?
-    echo
-    if [[ $STATUS -ne 0 ]]; then
-      echo "Timeout; not updating remote URL."
-    elif [ -z "$REPLY" -o "$REPLY" = "Y" -o "$REPLY" = "y" ]; then
-      eval "$GIT" config remote.origin.url "$CANONICAL_GIT_URL"
-      echo "Remote URL updated."
-    fi
-  fi
-
-  if is_git_clone_repo; then
-    git fetch -q origin &> /dev/null
-    local REBASE_TXT STATUS
-    REBASE_TXT=$(git rebase -q origin/master 2>&1)
-    STATUS=$?
-    if [[ $STATUS -ne 0 ]]; then
-      echo "depot_tools update failed. Conflict in $base_dir" >&2
-      echo "$REBASE_TXT" >&2
-      git rebase --abort 2> /dev/null
-    fi
-    return $STATUS
-  fi
-
-  test_git_svn
-  # work around a git-svn --quiet bug
-  OUTPUT=`eval "$GIT" svn rebase -q -q`
-  if [[ ! "$OUTPUT" == *Current.branch* ]]; then
-    echo $OUTPUT 1>&2
-  fi
+  #COHERENT BEGIN - Disable updates of depot tools
+  #remote_url=$(eval "$GIT" config --get remote.origin.url)
+  #if [ -n "$remote_url" -a "$remote_url" != "$CANONICAL_GIT_URL" ]; then
+  #  echo "Your copy of depot_tools is configured to fetch from an obsolete URL:"
+  #  echo
+  #  echo "  $remote_url"
+  #  echo
+  #  read -t 60 -p "OK to update it to $CANONICAL_GIT_URL ? [Y/n] " -n 1
+  #  STATUS=$?
+  #  echo
+  #  if [[ $STATUS -ne 0 ]]; then
+  #    echo "Timeout; not updating remote URL."
+  #  elif [ -z "$REPLY" -o "$REPLY" = "Y" -o "$REPLY" = "y" ]; then
+  #    eval "$GIT" config remote.origin.url "$CANONICAL_GIT_URL"
+  #    echo "Remote URL updated."
+  #  fi
+  #fi
+  #
+  #if is_git_clone_repo; then
+  #  git fetch -q origin &> /dev/null
+  #  local REBASE_TXT STATUS
+  #  REBASE_TXT=$(git rebase -q origin/master 2>&1)
+  #  STATUS=$?
+  #  if [[ $STATUS -ne 0 ]]; then
+  #    echo "depot_tools update failed. Conflict in $base_dir" >&2
+  #    echo "$REBASE_TXT" >&2
+  #    git rebase --abort 2> /dev/null
+  #  fi
+  #  return $STATUS
+  #fi
+  #
+  #test_git_svn
+  ## work around a git-svn --quiet bug
+  #OUTPUT=`eval "$GIT" svn rebase -q -q`
+  #if [[ ! "$OUTPUT" == *Current.branch* ]]; then
+  #  echo $OUTPUT 1>&2
+  #fi
+  #COHERENT END
   return 0
 }
 

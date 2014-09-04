@@ -1278,6 +1278,7 @@ want to set 'managed': False in .gclient.
       url_val = solution.values[url_idx]
       if type(url_val) is not ast.Str:
         continue
+#COHERENT START - Do not raise error for obsolete repository
 #      if (svn_url_re.match(url_val.s.strip())):
         #raise gclient_utils.Error(
 #"""
@@ -1287,6 +1288,7 @@ want to set 'managed': False in .gclient.
 #
 #http://www.chromium.org/developers/how-tos/get-the-code
 #""")
+#COHERENT END
       if (old_git_re.match(url_val.s.strip())):
         url_val.s = CHROMIUM_SRC_URL
         modified = True
