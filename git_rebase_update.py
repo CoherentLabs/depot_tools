@@ -13,6 +13,7 @@ import logging
 import sys
 import textwrap
 
+from fnmatch import fnmatch
 from pprint import pformat
 
 import git_common as git
@@ -41,15 +42,23 @@ def fetch_remotes(branch_tree):
   fetch_tags = False
   remotes = set()
   tag_set = git.tags()
+  fetchspec_map = {}
+  all_fetchspec_configs = git.run(
+      'config', '--get-regexp', r'^remote\..*\.fetch').strip()
+  for fetchspec_config in all_fetchspec_configs.splitlines():
+    key, _, fetchspec = fetchspec_config.partition(' ')
+    dest_spec = fetchspec.partition(':')[2]
+    remote_name = key.split('.')[1]
+    fetchspec_map[dest_spec] = remote_name
   for parent in branch_tree.itervalues():
     if parent in tag_set:
       fetch_tags = True
     else:
       full_ref = git.run('rev-parse', '--symbolic-full-name', parent)
-      if full_ref.startswith('refs/remotes'):
-        parts = full_ref.split('/')
-        remote_name = parts[2]
-        remotes.add(remote_name)
+      for dest_spec, remote_name in fetchspec_map.iteritems():
+        if fnmatch(full_ref, dest_spec):
+          remotes.add(remote_name)
+          break
 
   fetch_args = []
   if fetch_tags:
@@ -121,7 +130,8 @@ def rebase_branch(branch, parent, start_hash):
   if git.hash_one(parent) != start_hash:
     # Try a plain rebase first
     print 'Rebasing:', branch
-    if not git.rebase(parent, start_hash, branch, abort=True).success:
+    rebase_ret = git.rebase(parent, start_hash, branch, abort=True)
+    if not rebase_ret.success:
       # TODO(iannucci): Find collapsible branches in a smarter way?
       print "Failed! Attempting to squash", branch, "...",
       squash_branch = branch+"_squash_attempt"
@@ -138,25 +148,36 @@ def rebase_branch(branch, parent, start_hash):
         git.squash_current_branch(merge_base=start_hash)
         git.rebase(parent, start_hash, branch)
       else:
-        # rebase and leave in mid-rebase state.
-        git.rebase(parent, start_hash, branch)
         print "Failed!"
         print
-        print "Here's what git-rebase had to say:"
-        print squash_ret.message
-        print
-        print textwrap.dedent(
-        """
-        Squashing failed. You probably have a real merge conflict.
 
-        Your working copy is in mid-rebase. Either:
-         * completely resolve like a normal git-rebase; OR
-         * abort the rebase and mark this branch as dormant:
-               git config branch.%s.dormant true
+        # rebase and leave in mid-rebase state.
+        # This second rebase attempt should always fail in the same
+        # way that the first one does.  If it magically succeeds then
+        # something very strange has happened.
+        second_rebase_ret = git.rebase(parent, start_hash, branch)
+        if second_rebase_ret.success: # pragma: no cover
+          print "Second rebase succeeded unexpectedly!"
+          print "Please see: http://crbug.com/425696"
+          print "First rebased failed with:"
+          print rebase_ret.stderr
+        else:
+          print "Here's what git-rebase (squashed) had to say:"
+          print
+          print squash_ret.stdout
+          print squash_ret.stderr
+          print textwrap.dedent(
+          """\
+          Squashing failed. You probably have a real merge conflict.
 
-        And then run `git rebase-update` again to resume.
-        """ % branch)
-        return False
+          Your working copy is in mid-rebase. Either:
+           * completely resolve like a normal git-rebase; OR
+           * abort the rebase and mark this branch as dormant:
+                 git config branch.%s.dormant true
+
+          And then run `git rebase-update` again to resume.
+          """ % branch)
+          return False
   else:
     print '%s up-to-date' % branch
 

@@ -19,6 +19,7 @@ Branches are colorized as follows:
     * Note that multiple branches may be Cyan, if they are all on the same
       commit, and you have that commit checked out.
   * Green - a local branch
+  * Blue - a 'branch-heads' branch
   * Magenta - a tag
   * Magenta '{NO UPSTREAM}' - If you have local branches which do not track any
     upstream, then you will see this.
@@ -27,14 +28,13 @@ Branches are colorized as follows:
 import argparse
 import collections
 import sys
+import subprocess2
 
 from third_party import colorama
 from third_party.colorama import Fore, Style
 
-from git_common import current_branch, upstream, tags, get_all_tracking_info
-from git_common import get_git_version, MIN_UPSTREAM_TRACK_GIT_VERSION
-
-import git_cl
+from git_common import current_branch, upstream, tags, get_branches_info
+from git_common import get_git_version, MIN_UPSTREAM_TRACK_GIT_VERSION, hash_one
 
 DEFAULT_SEPARATOR = ' ' * 4
 
@@ -103,43 +103,54 @@ class BranchMapper(object):
   """A class which constructs output representing the tree's branch structure.
 
   Attributes:
-    __tracking_info: a map of branches to their TrackingInfo objects which
+    __branches_info: a map of branches to their BranchesInfo objects which
       consist of the branch hash, upstream and ahead/behind status.
     __gone_branches: a set of upstreams which are not fetchable by git"""
 
   def __init__(self):
     self.verbosity = 0
     self.output = OutputManager()
-    self.__tracking_info = get_all_tracking_info()
     self.__gone_branches = set()
-    self.__roots = set()
+    self.__branches_info = None
+    self.__parent_map = collections.defaultdict(list)
+    self.__current_branch = None
+    self.__current_hash = None
+    self.__tag_set = None
+
+  def start(self):
+    self.__branches_info = get_branches_info(
+        include_tracking_status=self.verbosity >= 1)
+    roots = set()
 
     # A map of parents to a list of their children.
-    self.parent_map = collections.defaultdict(list)
-    for branch, branch_info in self.__tracking_info.iteritems():
+    for branch, branch_info in self.__branches_info.iteritems():
       if not branch_info:
         continue
 
       parent = branch_info.upstream
-      if parent and not self.__tracking_info[parent]:
+      if not self.__branches_info[parent]:
         branch_upstream = upstream(branch)
         # If git can't find the upstream, mark the upstream as gone.
         if branch_upstream:
           parent = branch_upstream
         else:
           self.__gone_branches.add(parent)
-        # A parent that isn't in the tracking info is a root.
-        self.__roots.add(parent)
+        # A parent that isn't in the branches info is a root.
+        roots.add(parent)
 
-      self.parent_map[parent].append(branch)
+      self.__parent_map[parent].append(branch)
 
     self.__current_branch = current_branch()
-    self.__current_hash = self.__tracking_info[self.__current_branch].hash
+    self.__current_hash = hash_one('HEAD', short=True)
     self.__tag_set = tags()
 
-  def start(self):
-    for root in sorted(self.__roots):
-      self.__append_branch(root)
+    if roots:
+      for root in sorted(roots):
+        self.__append_branch(root)
+    else:
+      no_branches = OutputLine()
+      no_branches.append('No User Branches')
+      self.output.append(no_branches)
 
   def __is_invalid_parent(self, parent):
     return not parent or parent in self.__gone_branches
@@ -147,14 +158,16 @@ class BranchMapper(object):
   def __color_for_branch(self, branch, branch_hash):
     if branch.startswith('origin'):
       color = Fore.RED
+    elif branch.startswith('branch-heads'):
+      color = Fore.BLUE
     elif self.__is_invalid_parent(branch) or branch in self.__tag_set:
       color = Fore.MAGENTA
-    elif branch_hash == self.__current_hash:
+    elif self.__current_hash.startswith(branch_hash):
       color = Fore.CYAN
     else:
       color = Fore.GREEN
 
-    if branch_hash == self.__current_hash:
+    if branch_hash and self.__current_hash.startswith(branch_hash):
       color += Style.BRIGHT
     else:
       color += Style.NORMAL
@@ -164,8 +177,14 @@ class BranchMapper(object):
   def __append_branch(self, branch, depth=0):
     """Recurses through the tree structure and appends an OutputLine to the
     OutputManager for each branch."""
-    branch_info = self.__tracking_info[branch]
-    branch_hash = branch_info.hash if branch_info else None
+    branch_info = self.__branches_info[branch]
+    if branch_info:
+      branch_hash = branch_info.hash
+    else:
+      try:
+        branch_hash = hash_one(branch, short=True)
+      except subprocess2.CalledProcessError:
+        branch_hash = None
 
     line = OutputLine()
 
@@ -219,13 +238,15 @@ class BranchMapper(object):
 
     # The Rietveld issue associated with the branch.
     if self.verbosity >= 2:
+      import git_cl  # avoid heavy import cost unless we need it
       none_text = '' if self.__is_invalid_parent(branch) else 'None'
-      url = git_cl.Changelist(branchref=branch).GetIssueURL()
+      url = git_cl.Changelist(
+          branchref=branch).GetIssueURL() if branch_hash else None
       line.append(url or none_text, color=Fore.BLUE if url else Fore.WHITE)
 
     self.output.append(line)
 
-    for child in sorted(self.parent_map.pop(branch, ())):
+    for child in sorted(self.__parent_map.pop(branch, ())):
       self.__append_branch(child, depth=depth + 1)
 
 

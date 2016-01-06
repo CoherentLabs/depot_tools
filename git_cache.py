@@ -14,7 +14,6 @@ import re
 import tempfile
 import threading
 import time
-import shutil
 import subprocess
 import sys
 import urlparse
@@ -344,14 +343,7 @@ class Mirror(object):
       bootstrapped = not depth and bootstrap and self.bootstrap_repo(tempdir)
       if bootstrapped:
         # Bootstrap succeeded; delete previous cache, if any.
-        try:
-          # Try to move folder to tempdir if possible.
-          defunct_dir = tempfile.mkdtemp()
-          shutil.move(self.mirror_path, defunct_dir)
-          self.print('Moved defunct directory for repository %s from %s to %s'
-                     % (self.url, self.mirror_path, defunct_dir))
-        except Exception:
-          gclient_utils.rmtree(self.mirror_path)
+        gclient_utils.rmtree(self.mirror_path)
       elif not os.path.exists(config_file):
         # Bootstrap failed, no previous cache; start with a bare git dir.
         self.RunGit(['init', '--bare'], cwd=tempdir)
@@ -432,7 +424,8 @@ class Mirror(object):
     # The files are named <git number>.zip
     gen_number = subprocess.check_output(
         [self.git_exe, 'number', 'master'], cwd=self.mirror_path).strip()
-    self.RunGit(['gc'])  # Run Garbage Collect to compress packfile.
+    # Run Garbage Collect to compress packfile.
+    self.RunGit(['gc', '--prune=all'])
     # Creating a temp file and then deleting it ensures we can use this name.
     _, tmp_zipfile = tempfile.mkstemp(suffix='.zip')
     os.remove(tmp_zipfile)

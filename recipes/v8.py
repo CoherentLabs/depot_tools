@@ -14,28 +14,22 @@ class V8(recipe_util.Recipe):
 
   @staticmethod
   def fetch_spec(props):
-    ref = 'bleeding_edge'
-    url = 'https://chromium.googlesource.com/external/v8.git@%s' % ref
-    solution = { 'name'   :'v8',
-                 'url'    : url,
-                 'deps_file': '.DEPS.git',
-                 'managed'   : False,
-                 'custom_deps': {},
-                 'safesync_url': '',
+    url = 'https://chromium.googlesource.com/v8/v8.git'
+    solution = {
+        'name'        : 'v8',
+        'url'         : url,
+        'deps_file'   : 'DEPS',
+        'managed'     : False,
+        'custom_deps' : {},
+        'safesync_url': '',
     }
     spec = {
       'solutions': [solution],
-      'svn_url': 'https://v8.googlecode.com/svn',
-      'svn_branch': 'branches/bleeding_edge',
-      'svn_ref': 'bleeding_edge',
+      'with_branch_heads': True,
     }
-    checkout_type = 'gclient_git_svn'
-    if props.get('nosvn'):
-      checkout_type = 'gclient_git'
-    spec_type = '%s_spec' % checkout_type
     return {
-      'type': checkout_type,
-      spec_type: spec,
+      'type': 'gclient_git',
+      'gclient_git_spec': spec,
     }
 
   @staticmethod

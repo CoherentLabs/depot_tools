@@ -101,17 +101,31 @@ class GclientGitCheckout(GclientCheckout, GitCheckout):
   def __init__(self, options, spec, root):
     super(GclientGitCheckout, self).__init__(options, spec, root)
     assert 'solutions' in self.spec
-    keys = ['solutions', 'target_os', 'target_os_only']
-    gclient_spec = '\n'.join('%s = %s' % (key, self.spec[key])
-                             for key in keys if key in self.spec)
-    self.spec['gclient_spec'] = gclient_spec
+
+  def _format_spec(self):
+    def _format_literal(lit):
+      if isinstance(lit, basestring):
+        return '"%s"' % lit
+      if isinstance(lit, list):
+        return '[%s]' % ', '.join(_format_literal(i) for i in lit)
+      return '%r' % lit
+    soln_strings = []
+    for soln in self.spec['solutions']:
+      soln_string= '\n'.join('    "%s": %s,' % (key, _format_literal(value))
+                             for key, value in soln.iteritems())
+      soln_strings.append('  {\n%s\n  },' % soln_string)
+    gclient_spec = 'solutions = [\n%s\n]\n' % '\n'.join(soln_strings)
+    extra_keys = ['target_os', 'target_os_only']
+    gclient_spec += ''.join('%s = %s\n' % (key, _format_literal(self.spec[key]))
+                             for key in extra_keys if key in self.spec)
+    return gclient_spec
 
   def exists(self):
     return os.path.exists(os.path.join(os.getcwd(), self.root))
 
   def init(self):
     # Configure and do the gclient checkout.
-    self.run_gclient('config', '--spec', self.spec['gclient_spec'])
+    self.run_gclient('config', '--spec', self._format_spec())
     sync_cmd = ['sync']
     if self.options.nohooks:
       sync_cmd.append('--nohooks')
@@ -139,20 +153,18 @@ class GclientGitSvnCheckout(GclientGitCheckout, SvnCheckout):
 
   def __init__(self, options, spec, root):
     super(GclientGitSvnCheckout, self).__init__(options, spec, root)
-    assert 'svn_url' in self.spec
-    assert 'svn_branch' in self.spec
-    assert 'svn_ref' in self.spec
 
   def init(self):
     # Ensure we are authenticated with subversion for all submodules.
     git_svn_dirs = json.loads(self.spec.get('submodule_git_svn_spec', '{}'))
     git_svn_dirs.update({self.root: self.spec})
     for _, svn_spec in git_svn_dirs.iteritems():
-      try:
-        self.run_svn('ls', '--non-interactive', svn_spec['svn_url'])
-      except subprocess.CalledProcessError:
-        print 'Please run `svn ls %s`' % svn_spec['svn_url']
-        return 1
+      if svn_spec.get('svn_url'):
+        try:
+          self.run_svn('ls', '--non-interactive', svn_spec['svn_url'])
+        except subprocess.CalledProcessError:
+          print 'Please run `svn ls %s`' % svn_spec['svn_url']
+          return 1
 
     super(GclientGitSvnCheckout, self).init()
 
@@ -164,12 +176,17 @@ class GclientGitSvnCheckout(GclientGitCheckout, SvnCheckout):
       wd = os.path.join(self.base, real_path)
       if self.options.dry_run:
         print 'cd %s' % wd
-      prefix = svn_spec.get('svn_prefix', 'origin/')
-      self.run_git('svn', 'init', '--prefix=' + prefix, '-T',
-                   svn_spec['svn_branch'], svn_spec['svn_url'], cwd=wd)
-      self.run_git('config', '--replace', 'svn-remote.svn.fetch',
-                   svn_spec['svn_branch'] + ':refs/remotes/' + prefix +
-                   svn_spec['svn_ref'], cwd=wd)
+      if svn_spec.get('auto'):
+        self.run_git('auto-svn', cwd=wd)
+        continue
+      self.run_git('svn', 'init', svn_spec['svn_url'], cwd=wd)
+      self.run_git('config', '--unset-all', 'svn-remote.svn.fetch', cwd=wd)
+      for svn_branch, git_ref in svn_spec.get('git_svn_fetch', {}).items():
+        self.run_git('config', '--add', 'svn-remote.svn.fetch',
+                     '%s:%s' % (svn_branch, git_ref), cwd=wd)
+      for svn_branch, git_ref in svn_spec.get('git_svn_branches', {}).items():
+        self.run_git('config', '--add', 'svn-remote.svn.branches',
+                     '%s:%s' % (svn_branch, git_ref), cwd=wd)
       self.run_git('svn', 'fetch', cwd=wd)
 
 

@@ -110,12 +110,7 @@ class Gsutil(object):
     return (code, out, err)
 
 
-def check_bucket_permissions(bucket, gsutil):
-  if not bucket:
-    print >> sys.stderr, 'Missing bucket %s.'
-    return (None, 1)
-  base_url = 'gs://%s' % bucket
-
+def check_bucket_permissions(base_url, gsutil):
   code, _, ls_err = gsutil.check_call('ls', base_url)
   if code != 0:
     print >> sys.stderr, ls_err
@@ -236,8 +231,13 @@ def _downloader_worker_thread(thread_num, q, force, base_url,
           file_url, output_filename)))
       continue
     # Fetch the file.
-    out_q.put('%d> Downloading %s...' % (
-        thread_num, output_filename))
+    out_q.put('%d> Downloading %s...' % (thread_num, output_filename))
+    try:
+      os.remove(output_filename)  # Delete the file if it exists already.
+    except OSError:
+      if os.path.exists(output_filename):
+        out_q.put('%d> Warning: deleting %s failed.' % (
+            thread_num, output_filename))
     code, _, err = gsutil.check_call('cp', '-q', file_url, output_filename)
     if code != 0:
       out_q.put('%d> %s' % (thread_num, err))
@@ -452,10 +452,13 @@ def main(args):
       parser.error('Output file %s exists and --no_resume is specified.'
                    % options.output)
 
+  base_url = 'gs://%s' % options.bucket
+
   # Check we have a valid bucket with valid permissions.
-  base_url, code = check_bucket_permissions(options.bucket, gsutil)
-  if code:
-    return code
+  if not options.no_auth:
+    code = check_bucket_permissions(base_url, gsutil, options.no_auth)
+    if code:
+      return code
 
   return download_from_google_storage(
       input_filename, base_url, gsutil, options.num_threads, options.directory,

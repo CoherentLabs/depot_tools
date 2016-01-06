@@ -15,32 +15,24 @@ class Naclports(recipe_util.Recipe):
   @staticmethod
   def fetch_spec(props):
     url = 'https://chromium.googlesource.com/external/naclports.git'
-    solution = { 'name'   :'src',
-                 'url'    : url,
-                 'deps_file': 'DEPS',
-                 'managed'   : False,
-                 'custom_deps': {},
-                 'safesync_url': '',
+    solution = {
+        'name'        : 'src',
+        'url'         : url,
+        'deps_file'   : 'DEPS',
+        'managed'     : False,
+        'custom_deps' : {},
+        'safesync_url': '',
     }
     spec = {
       'solutions': [solution],
-      'svn_url': 'https://naclports.googlecode.com/svn',
-      'svn_branch': 'trunk/src',
-      'svn_ref': 'master',
     }
-    if props.get('submodule_git_svn_spec'):
-      spec['submodule_git_svn_spec'] = props['submodule_git_svn_spec']
     if props.get('target_os'):
       spec['target_os'] = props['target_os'].split(',')
     if props.get('target_os_only'):
       spec['target_os_only'] = props['target_os_only']
-    checkout_type = 'gclient_git_svn'
-    if props.get('nosvn'):
-      checkout_type = 'gclient_git'
-    spec_type = '%s_spec' % checkout_type
     return {
-      'type': checkout_type,
-      spec_type: spec,
+      'type': 'gclient_git',
+      'gclient_git_spec': spec,
     }
 
   @staticmethod

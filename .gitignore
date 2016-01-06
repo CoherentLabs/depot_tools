@@ -1,5 +1,6 @@
 # Ignore any python bytecode.
 *.pyc
+*.pyo
 
 # Ignore the batch files produced by the Windows bootstrapping.
 /git.bat

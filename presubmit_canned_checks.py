@@ -109,9 +109,11 @@ def CheckChangeLintsClean(input_api, output_api, source_file_filter=None):
   # - runtime/int         : Can be fixed long term; volume of errors too high
   # - runtime/virtual     : Broken now, but can be fixed in the future?
   # - whitespace/braces   : We have a lot of explicit scoping in chrome code.
+  # - readability/inheritance : Temporary, while the OVERRIDE and FINAL fixup
+  #                             is in progress.
   cpplint._SetFilters('-build/include,-build/include_order,-build/namespace,'
                       '-readability/casting,-runtime/int,-runtime/virtual,'
-                      '-whitespace/braces')
+                      '-whitespace/braces,-readability/inheritance')
 
   # We currently are more strict with normal code than unit tests; 4 and 5 are
   # the verbosity level that would normally be passed to cpplint.py through
@@ -362,6 +364,9 @@ def CheckLongLines(input_api, output_api, maxlen, source_file_filter=None):
       return True
 
     if 'url(' in line and file_extension == 'css':
+      return True
+
+    if '<include' in line and file_extension in ('css', 'html', 'js'):
       return True
 
     return input_api.re.match(
@@ -1101,7 +1106,10 @@ def CheckPatchFormatted(input_api, output_api):
   code, _ = git_cl.RunGitWithCode(cmd, suppress_stderr=True)
   if code == 2:
     return [output_api.PresubmitPromptWarning(
-      'Your patch is not formatted, please run git cl format.')]
+      'The %s directory requires clang-formatting. '
+      'Please run git cl format %s' %
+      (input_api.basename(input_api.PresubmitLocalPath()),
+       input_api.basename(input_api.PresubmitLocalPath())))]
   # As this is just a warning, ignore all other errors if the user
   # happens to have a broken clang-format, doesn't use git, etc etc.
   return []

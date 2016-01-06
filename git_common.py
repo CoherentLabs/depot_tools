@@ -81,11 +81,12 @@ GIT_TRANSIENT_ERRORS = (
     # crbug.com/187444
     r'RPC failed; result=\d+, HTTP code = \d+',
 
-    # crbug.com/315421
-    r'The requested URL returned error: 500 while accessing',
-
     # crbug.com/388876
     r'Connection timed out',
+
+    # crbug.com/430343
+    # TODO(dnj): Resync with Chromite.
+    r'The requested URL returned error: 5\d+',
 )
 
 GIT_TRANSIENT_ERRORS_RE = re.compile('|'.join(GIT_TRANSIENT_ERRORS),
@@ -319,15 +320,6 @@ def branches(*args):
     yield line.split()[-1]
 
 
-def run_with_retcode(*cmd, **kwargs):
-  """Run a command but only return the status code."""
-  try:
-    run(*cmd, **kwargs)
-    return 0
-  except subprocess2.CalledProcessError as cpe:
-    return cpe.returncode
-
-
 def config(option, default=None):
   try:
     return run('config', '--get', option) or default
@@ -506,7 +498,7 @@ def parse_commitrefs(*commitrefs):
     raise BadCommitRefException(commitrefs)
 
 
-RebaseRet = collections.namedtuple('RebaseRet', 'success message')
+RebaseRet = collections.namedtuple('RebaseRet', 'success stdout stderr')
 
 
 def rebase(parent, start, branch, abort=False):
@@ -530,11 +522,11 @@ def rebase(parent, start, branch, abort=False):
     if TEST_MODE:
       args.insert(0, '--committer-date-is-author-date')
     run('rebase', *args)
-    return RebaseRet(True, '')
+    return RebaseRet(True, '', '')
   except subprocess2.CalledProcessError as cpe:
     if abort:
       run('rebase', '--abort')
-    return RebaseRet(False, cpe.stdout)
+    return RebaseRet(False, cpe.stdout, cpe.stderr)
 
 
 def remove_merge_base(branch):
@@ -549,6 +541,15 @@ def root():
 def run(*cmd, **kwargs):
   """The same as run_with_stderr, except it only returns stdout."""
   return run_with_stderr(*cmd, **kwargs)[0]
+
+
+def run_with_retcode(*cmd, **kwargs):
+  """Run a command but only return the status code."""
+  try:
+    run(*cmd, **kwargs)
+    return 0
+  except subprocess2.CalledProcessError as cpe:
+    return cpe.returncode
 
 
 def run_stream(*cmd, **kwargs):
@@ -599,6 +600,7 @@ def set_branch_config(branch, option, value, scope='local'):
 
 def set_config(option, value, scope='local'):
   run('config', '--' + scope, option, value)
+
 
 def squash_current_branch(header=None, merge_base=None):
   header = header or 'git squash commit.'
@@ -723,6 +725,7 @@ def upstream(branch):
   except subprocess2.CalledProcessError:
     return None
 
+
 def get_git_version():
   """Returns a tuple that contains the numeric components of the current git
   version."""
@@ -733,18 +736,19 @@ def get_git_version():
   return tuple(int(x) for x in version.split('.'))
 
 
-def get_all_tracking_info():
+def get_branches_info(include_tracking_status):
   format_string = (
       '--format=%(refname:short):%(objectname:short):%(upstream:short):')
 
   # This is not covered by the depot_tools CQ which only has git version 1.8.
-  if get_git_version() >= MIN_UPSTREAM_TRACK_GIT_VERSION:  # pragma: no cover
+  if (include_tracking_status and
+      get_git_version() >= MIN_UPSTREAM_TRACK_GIT_VERSION):  # pragma: no cover
     format_string += '%(upstream:track)'
 
   info_map = {}
   data = run('for-each-ref', format_string, 'refs/heads')
-  TrackingInfo = collections.namedtuple(
-      'TrackingInfo', 'hash upstream ahead behind')
+  BranchesInfo = collections.namedtuple(
+      'BranchesInfo', 'hash upstream ahead behind')
   for line in data.splitlines():
     (branch, branch_hash, upstream_branch, tracking_status) = line.split(':')
 
@@ -754,7 +758,7 @@ def get_all_tracking_info():
     behind_match = re.search(r'behind (\d+)', tracking_status)
     behind = int(behind_match.group(1)) if behind_match else None
 
-    info_map[branch] = TrackingInfo(
+    info_map[branch] = BranchesInfo(
         hash=branch_hash, upstream=upstream_branch, ahead=ahead, behind=behind)
 
   # Set None for upstreams which are not branches (e.g empty upstream, remotes
