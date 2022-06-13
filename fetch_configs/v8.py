@@ -14,7 +14,7 @@ class V8(config_util.Config):
 
   @staticmethod
   def fetch_spec(props):
-    url = 'git@github.com:CoherentLabs/v8/v8.git'
+    url = 'git@github.com:CoherentLabs/v8.git'
     solution = {
         'name'        : 'v8',
         'url'         : url,
