@@ -43,7 +43,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
     with self.m.context(env=env):
       with self.m.depot_tools.on_path():
         return self.m.step(name,
-                           ['python3', '-u', bot_update_path] + cmd,
+                           ['vpython3', '-u', bot_update_path] + cmd,
                            **kwargs)
 
   @property
@@ -99,6 +99,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
                       set_output_commit=False,
                       step_test_data=None,
                       enforce_fetch=False,
+                      download_topics=False,
                       **kwargs):
     """
     Args:
@@ -127,6 +128,8 @@ class BotUpdateApi(recipe_api.RecipeApi):
         change in self.m.buildbucket.build.input.gerrit_changes, because
         bot_update module ONLY supports one change. Users may specify a change
         via tryserver.set_change() and explicitly set this flag False.
+      * download_topics: If True, gclient downloads and patches locally from all
+        open Gerrit CLs that have the same topic as the tested patch ref.
     """
     assert not (ignore_input_commit and set_output_commit)
     if assert_one_gerrit_change:
@@ -274,6 +277,8 @@ class BotUpdateApi(recipe_api.RecipeApi):
       cmd.append('--with_tags')
     if gerrit_no_reset:
       cmd.append('--gerrit_no_reset')
+    if download_topics:
+      cmd.append('--download_topics')
     if enforce_fetch:
       cmd.append('--enforce_fetch')
     if no_fetch_tags:
@@ -306,7 +311,13 @@ class BotUpdateApi(recipe_api.RecipeApi):
       step_result = f.result
       raise
     finally:
-      if step_result and step_result.json.output:
+      # The step_result can be missing the json attribute if the build
+      # is shutting down and the bot_update script is not able to finish
+      # writing the json output.
+      # An AttributeError occuring in this finally block swallows any
+      # StepFailure that may bubble up.
+      if (step_result and hasattr(step_result, 'json')
+          and step_result.json.output):
         result = step_result.json.output
         self._last_returned_properties = result.get('properties', {})
 
@@ -356,7 +367,8 @@ class BotUpdateApi(recipe_api.RecipeApi):
 
         # Set output commit of the build.
         if (set_output_commit and
-            'got_revision' in self._last_returned_properties):
+            'got_revision' in self._last_returned_properties and
+            'got_revision' in reverse_rev_map):
           # As of April 2019, got_revision describes the output commit,
           # the same commit that Build.output.gitiles_commit describes.
           # In particular, users tend to set got_revision to make Milo display

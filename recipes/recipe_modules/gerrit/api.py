@@ -22,12 +22,11 @@ class GerritApi(recipe_api.RecipeApi):
         env['PATH'], str(self.repo_resource())])
 
     with self.m.context(env=env):
-      return self.m.python(prefix + name,
-                           self.repo_resource('gerrit_client.py'),
-                           cmd,
-                           infra_step=infra_step,
-                           venv=True,
-                           **kwargs)
+      return self.m.step(
+          prefix + name,
+          ['vpython3', self.repo_resource('gerrit_client.py')] + cmd,
+          infra_step=infra_step,
+          **kwargs)
 
   def call_raw_api(self,
                    host,
@@ -325,7 +324,9 @@ class GerritApi(recipe_api.RecipeApi):
                    params=frozenset(['status=NEW']),
                    cc_list=frozenset([]),
                    submit=False,
-                   submit_later=False):
+                   submit_later=False,
+                   step_test_data_create_change=None,
+                   step_test_data_submit_change=None):
     """Update a set of files by creating and submitting a Gerrit CL.
 
     Args:
@@ -342,6 +343,10 @@ class GerritApi(recipe_api.RecipeApi):
       * submit_later: If this change has related CLs, we may want to commit
            them in a chain. So only set Bot-Commit+1, making it ready for
            submit together. Ignored if submit is True.
+      * step_test_data_create_change: Optional mock test data for the step
+           create gerrit change.
+      * step_test_data_submit_change: Optional mock test data for the step
+          submit gerrit change.
 
     Returns:
       A ChangeInfo dictionary as documented here:
@@ -368,7 +373,12 @@ class GerritApi(recipe_api.RecipeApi):
       command.extend(['-p', p])
     for cc in cc_list:
       command.extend(['--cc', cc])
-    step_result = self('create change at (%s %s)' % (project, branch), command)
+    step_test_data = step_test_data_create_change or (
+        lambda: self.test_api.update_files_response_data())
+
+    step_result = self('create change at (%s %s)' % (project, branch),
+                       command,
+                       step_test_data=step_test_data)
     change = int(step_result.json.output.get('_number'))
     step_result.presentation.links['change %d' %
                                    change] = '%s/#/q/%d' % (host, change)
@@ -431,5 +441,9 @@ class GerritApi(recipe_api.RecipeApi):
           '--json_file',
           self.m.json.output(),
       ]
-      step_result = self('submit change %d' % change, submit_cmd)
+      step_test_data = step_test_data_submit_change or (
+          lambda: self.test_api.update_files_response_data(status='MERGED'))
+      step_result = self('submit change %d' % change,
+                         submit_cmd,
+                         step_test_data=step_test_data)
     return step_result.json.output

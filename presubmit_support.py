@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -169,6 +169,10 @@ class ThreadPool(object):
   def __init__(self, pool_size=None, timeout=None):
     self.timeout = timeout
     self._pool_size = pool_size or multiprocessing.cpu_count()
+    if sys.platform == 'win32':
+      # TODO(crbug.com/1190269) - we can't use more than 56 child processes on
+      # Windows or Python3 may hang.
+      self._pool_size = min(self._pool_size, 56)
     self._messages = []
     self._messages_lock = threading.Lock()
     self._tests = []
@@ -302,6 +306,27 @@ def prompt_should_continue(prompt_string):
   return response in ('y', 'yes')
 
 
+def _ShouldRunPresubmit(script_text, use_python3):
+  """Try to figure out whether these presubmit checks should be run under
+    python2 or python3. We need to do this without actually trying to
+    compile the text, since the text might compile in one but not the
+    other.
+
+    Args:
+      script_text: The text of the presubmit script.
+      use_python3: if true, will use python3 instead of python2 by default
+                if USE_PYTHON3 is not specified.
+
+    Return:
+      A boolean if presubmit should be executed
+  """
+  m = re.search('^USE_PYTHON3 = (True|False)$', script_text, flags=re.MULTILINE)
+  if m:
+    use_python3 = m.group(1) == 'True'
+
+  return ((sys.version_info.major == 2) and not use_python3) or \
+      ((sys.version_info.major == 3) and use_python3)
+
 # Top level object so multiprocessing can pickle
 # Public access through OutputApi object.
 class _PresubmitResult(object):
@@ -315,7 +340,7 @@ class _PresubmitResult(object):
     items: A list of short strings to indicate where errors occurred.
     long_text: multi-line text output, e.g. from another tool
     """
-    self._message = message
+    self._message = _PresubmitResult._ensure_str(message)
     self._items = items or []
     self._long_text = _PresubmitResult._ensure_str(long_text.rstrip())
 
@@ -538,7 +563,8 @@ class InputApi(object):
       r'.+\.c$', r'.+\.cc$', r'.+\.cpp$', r'.+\.h$', r'.+\.m$', r'.+\.mm$',
       r'.+\.inl$', r'.+\.asm$', r'.+\.hxx$', r'.+\.hpp$', r'.+\.s$', r'.+\.S$',
       # Scripts
-      r'.+\.js$', r'.+\.py$', r'.+\.sh$', r'.+\.rb$', r'.+\.pl$', r'.+\.pm$',
+      r'.+\.js$', r'.+\.ts$', r'.+\.py$', r'.+\.sh$', r'.+\.rb$', r'.+\.pl$',
+      r'.+\.pm$',
       # Other
       r'.+\.java$', r'.+\.mk$', r'.+\.am$', r'.+\.css$', r'.+\.mojom$',
       r'.+\.fidl$'
@@ -568,7 +594,8 @@ class InputApi(object):
   )
 
   def __init__(self, change, presubmit_path, is_committing,
-      verbose, gerrit_obj, dry_run=None, thread_pool=None, parallel=False):
+      verbose, gerrit_obj, dry_run=None, thread_pool=None, parallel=False,
+      no_diffs=False):
     """Builds an InputApi object.
 
     Args:
@@ -579,6 +606,8 @@ class InputApi(object):
       dry_run: if true, some Checks will be skipped.
       parallel: if true, all tests reported via input_api.RunTests for all
                 PRESUBMIT files will be run in parallel.
+      no_diffs: if true, implies that --files or --all was specified so some
+                checks can be skipped, and some errors will be messages.
     """
     # Version number of the presubmit_support script.
     self.version = [int(x) for x in __version__.split('.')]
@@ -586,6 +615,7 @@ class InputApi(object):
     self.is_committing = is_committing
     self.gerrit = gerrit_obj
     self.dry_run = dry_run
+    self.no_diffs = no_diffs
 
     self.parallel = parallel
     self.thread_pool = thread_pool or ThreadPool()
@@ -632,6 +662,10 @@ class InputApi(object):
     self.platform = sys.platform
 
     self.cpu_count = multiprocessing.cpu_count()
+    if self.is_windows:
+      # TODO(crbug.com/1190269) - we can't use more than 56 child processes on
+      # Windows or Python3 may hang.
+      self.cpu_count = min(self.cpu_count, 56)
 
     # The local path of the currently-being-processed presubmit script.
     self._current_presubmit_path = os.path.dirname(presubmit_path)
@@ -644,12 +678,15 @@ class InputApi(object):
 
     self.owners_client = None
     if self.gerrit:
-      self.owners_client = owners_client.GetCodeOwnersClient(
-          root=change.RepositoryRoot(),
-          upstream=change.UpstreamBranch(),
-          host=self.gerrit.host,
-          project=self.gerrit.project,
-          branch=self.gerrit.branch)
+      try:
+        self.owners_client = owners_client.GetCodeOwnersClient(
+            root=change.RepositoryRoot(),
+            upstream=change.UpstreamBranch(),
+            host=self.gerrit.host,
+            project=self.gerrit.project,
+            branch=self.gerrit.branch)
+      except Exception as e:
+        print('Failed to set owners_client - %s' % str(e))
     self.owners_db = owners_db.Database(
         change.RepositoryRoot(), fopen=open, os_path=self.os_path)
     self.owners_finder = owners_finder.OwnersFinder
@@ -685,9 +722,11 @@ class InputApi(object):
     script, or subdirectories thereof. Note that files are listed using the OS
     path separator, so backslashes are used as separators on Windows.
     """
-    dir_with_slash = normpath('%s/' % self.PresubmitLocalPath())
-    if len(dir_with_slash) == 1:
-      dir_with_slash = ''
+    dir_with_slash = normpath(self.PresubmitLocalPath())
+    # normpath strips trailing path separators, so the trailing separator has to
+    # be added after the normpath call.
+    if len(dir_with_slash) > 0:
+      dir_with_slash += os.path.sep
 
     return list(filter(
         lambda x: normpath(x.AbsoluteLocalPath()).startswith(dir_with_slash),
@@ -713,9 +752,11 @@ class InputApi(object):
                ' is deprecated and ignored' % str(include_deletes),
            category=DeprecationWarning,
            stacklevel=2)
-    return list(filter(
-        lambda x: x.IsTestableFile(),
-        self.AffectedFiles(include_deletes=False, **kwargs)))
+    # pylint: disable=consider-using-generator
+    return [
+        x for x in self.AffectedFiles(include_deletes=False, **kwargs)
+        if x.IsTestableFile()
+    ]
 
   def AffectedTextFiles(self, include_deletes=None):
     """An alias to AffectedTestableFiles for backwards compatibility."""
@@ -746,6 +787,11 @@ class InputApi(object):
       local_path = affected_file.LocalPath()
       for item in items:
         if self.re.match(item, local_path):
+          return True
+        # Handle the cases where the files regex only handles /, but the local
+        # path uses \.
+        if self.is_windows and self.re.match(item, local_path.replace(
+            '\\', '/')):
           return True
       return False
     return (Find(affected_file, files_to_check) and
@@ -875,7 +921,9 @@ class _GitDiffCache(_DiffCache):
     self._diffs_by_file = None
 
   def GetDiff(self, path, local_root):
-    if not self._diffs_by_file:
+    # Compare against None to distinguish between None and an initialized but
+    # empty dictionary.
+    if self._diffs_by_file == None:
       # Compute a single diff for all files and parse the output; should
       # with git this is much faster than computing one diff for each file.
       diffs = {}
@@ -904,8 +952,11 @@ class _GitDiffCache(_DiffCache):
         (normpath(path), ''.join(diff)) for path, diff in diffs.items())
 
     if path not in self._diffs_by_file:
-      raise PresubmitFailure(
-          'Unified diff did not contain entry for file %s' % path)
+      # SCM didn't have any diff on this file. It could be that the file was not
+      # modified at all (e.g. user used --all flag in git cl presubmit).
+      # Intead of failing, return empty string.
+      # See: https://crbug.com/808346.
+      return ''
 
     return self._diffs_by_file[path]
 
@@ -1352,9 +1403,19 @@ def ListRelevantPresubmitFiles(files, root):
 
 
 class GetPostUploadExecuter(object):
-  @staticmethod
-  def ExecPresubmitScript(script_text, presubmit_path, gerrit_obj, change):
+  def __init__(self, use_python3):
+    """
+    Args:
+      use_python3: if true, will use python3 instead of python2 by default
+                if USE_PYTHON3 is not specified.
+    """
+    self.use_python3 = use_python3
+
+  def ExecPresubmitScript(self, script_text, presubmit_path, gerrit_obj,
+                          change):
     """Executes PostUploadHook() from a single presubmit script.
+    Caller is responsible for validating whether the hook should be executed
+    and should only call this function if it should be.
 
     Args:
       script_text: The text of the presubmit script.
@@ -1394,22 +1455,24 @@ def _MergeMasters(masters1, masters2):
   return result
 
 
-def DoPostUploadExecuter(change,
-                         gerrit_obj,
-                         verbose):
+def DoPostUploadExecuter(change, gerrit_obj, verbose, use_python3=False):
   """Execute the post upload hook.
 
   Args:
     change: The Change object.
     gerrit_obj: The GerritAccessor object.
     verbose: Prints debug info.
+    use_python3: if true, default to using Python3 for presubmit checks
+                 rather than Python2.
   """
+  python_version = 'Python %s' % sys.version_info.major
+  sys.stdout.write('Running %s post upload checks ...\n' % python_version)
   presubmit_files = ListRelevantPresubmitFiles(
       change.LocalPaths(), change.RepositoryRoot())
   if not presubmit_files and verbose:
     sys.stdout.write('Warning, no PRESUBMIT.py found.\n')
   results = []
-  executer = GetPostUploadExecuter()
+  executer = GetPostUploadExecuter(use_python3)
   # The root presubmit file should be executed after the ones in subdirectories.
   # i.e. the specific post upload hooks should run before the general ones.
   # Thus, reverse the order provided by ListRelevantPresubmitFiles.
@@ -1420,9 +1483,10 @@ def DoPostUploadExecuter(change,
     if verbose:
       sys.stdout.write('Running %s\n' % filename)
     # Accept CRLF presubmit script.
-    presubmit_script = gclient_utils.FileRead(filename, 'rU')
-    results.extend(executer.ExecPresubmitScript(
-        presubmit_script, filename, gerrit_obj, change))
+    presubmit_script = gclient_utils.FileRead(filename).replace('\r\n', '\n')
+    if _ShouldRunPresubmit(presubmit_script, use_python3):
+      results.extend(executer.ExecPresubmitScript(
+          presubmit_script, filename, gerrit_obj, change))
 
   if not results:
     return 0
@@ -1441,7 +1505,8 @@ def DoPostUploadExecuter(change,
 
 class PresubmitExecuter(object):
   def __init__(self, change, committing, verbose, gerrit_obj, dry_run=None,
-               thread_pool=None, parallel=False, use_python3=False):
+               thread_pool=None, parallel=False, use_python3=False,
+               no_diffs=False):
     """
     Args:
       change: The Change object.
@@ -1452,6 +1517,8 @@ class PresubmitExecuter(object):
                 PRESUBMIT files will be run in parallel.
       use_python3: if true, will use python3 instead of python2 by default
                 if USE_PYTHON3 is not specified.
+      no_diffs: if true, implies that --files or --all was specified so some
+                checks can be skipped, and some errors will be messages.
     """
     self.change = change
     self.committing = committing
@@ -1462,9 +1529,12 @@ class PresubmitExecuter(object):
     self.thread_pool = thread_pool
     self.parallel = parallel
     self.use_python3 = use_python3
+    self.no_diffs = no_diffs
 
   def ExecPresubmitScript(self, script_text, presubmit_path):
     """Executes a single presubmit script.
+    Caller is responsible for validating whether the hook should be executed
+    and should only call this function if it should be.
 
     Args:
       script_text: The text of the presubmit script.
@@ -1474,7 +1544,6 @@ class PresubmitExecuter(object):
     Return:
       A list of result objects, empty if no problems.
     """
-
     # Change to the presubmit file's directory to support local imports.
     main_path = os.getcwd()
     presubmit_dir = os.path.dirname(presubmit_path)
@@ -1484,26 +1553,12 @@ class PresubmitExecuter(object):
     input_api = InputApi(self.change, presubmit_path, self.committing,
                          self.verbose, gerrit_obj=self.gerrit,
                          dry_run=self.dry_run, thread_pool=self.thread_pool,
-                         parallel=self.parallel)
+                         parallel=self.parallel, no_diffs=self.no_diffs)
     output_api = OutputApi(self.committing)
     context = {}
 
-    # Try to figure out whether these presubmit checks should be run under
-    # python2 or python3. We need to do this without actually trying to
-    # compile the text, since the text might compile in one but not the
-    # other.
-    m = re.search('^USE_PYTHON3 = (True|False)$', script_text,
-                  flags=re.MULTILINE)
-    if m:
-      use_python3 = m.group(1) == 'True'
-    else:
-      use_python3 = self.use_python3
-    if (((sys.version_info.major == 2) and use_python3) or
-        ((sys.version_info.major == 3) and not use_python3)):
-      return []
-
     try:
-      exec(compile(script_text, 'PRESUBMIT.py', 'exec', dont_inherit=True),
+      exec(compile(script_text, presubmit_path, 'exec', dont_inherit=True),
            context)
     except Exception as e:
       raise PresubmitFailure('"%s" had an exception.\n%s' % (presubmit_path, e))
@@ -1547,7 +1602,8 @@ class PresubmitExecuter(object):
               continue
             logging.debug('Running %s in %s', function_name, presubmit_path)
             results.extend(
-                self._run_check_function(function_name, context, sink))
+                self._run_check_function(function_name, context, sink,
+                                         presubmit_path))
             logging.debug('Running %s done.', function_name)
             self.more_cc.extend(output_api.more_cc)
 
@@ -1559,7 +1615,8 @@ class PresubmitExecuter(object):
           if function_name in list(context.keys()):
             logging.debug('Running %s in %s', function_name, presubmit_path)
             results.extend(
-                self._run_check_function(function_name, context, sink))
+                self._run_check_function(function_name, context, sink,
+                                         presubmit_path))
             logging.debug('Running %s done.', function_name)
             self.more_cc.extend(output_api.more_cc)
 
@@ -1571,7 +1628,7 @@ class PresubmitExecuter(object):
     os.chdir(main_path)
     return results
 
-  def _run_check_function(self, function_name, context, sink=None):
+  def _run_check_function(self, function_name, context, sink, presubmit_path):
     """Evaluates and returns the result of a given presubmit function.
 
     If sink is given, the result of the presubmit function will be reported
@@ -1589,19 +1646,17 @@ class PresubmitExecuter(object):
       result = eval(function_name + '(*__args)', context)
       self._check_result_type(result)
     except Exception:
-      if sink:
-        elapsed_time = time_time() - start_time
-        sink.report(function_name, rdb_wrapper.STATUS_FAIL, elapsed_time)
-      # TODO(crbug.com/953884): replace reraise with native py3:
-      #   raise .. from e
-      e_type, e_value, e_tb = sys.exc_info()
-      print('Evaluation of %s failed: %s' % (function_name, e_value))
-      six.reraise(e_type, e_value, e_tb)
+      _, e_value, _ = sys.exc_info()
+      result = [
+          OutputApi.PresubmitError(
+              'Evaluation of %s failed: %s, %s' %
+              (function_name, e_value, traceback.format_exc()))
+      ]
 
     elapsed_time = time_time() - start_time
     if elapsed_time > 10.0:
-      sys.stdout.write(
-          '%s took %.1fs to run.\n' % (function_name, elapsed_time))
+      sys.stdout.write('%6.1fs to run %s from %s.\n' %
+                       (elapsed_time, function_name, presubmit_path))
     if sink:
       status = rdb_wrapper.STATUS_PASS
       if any(r.fatal for r in result):
@@ -1630,7 +1685,8 @@ def DoPresubmitChecks(change,
                       dry_run=None,
                       parallel=False,
                       json_output=None,
-                      use_python3=False):
+                      use_python3=False,
+                      no_diffs=False):
   """Runs all presubmit checks that apply to the files in the change.
 
   This finds all PRESUBMIT.py files in directories enclosing the files in the
@@ -1653,6 +1709,8 @@ def DoPresubmitChecks(change,
               PRESUBMIT files will be run in parallel.
     use_python3: if true, default to using Python3 for presubmit checks
                  rather than Python2.
+    no_diffs: if true, implies that --files or --all was specified so some
+              checks can be skipped, and some errors will be messages.
   Return:
     1 if presubmit checks failed or 0 otherwise.
   """
@@ -1675,22 +1733,46 @@ def DoPresubmitChecks(change,
     if not presubmit_files and verbose:
       sys.stdout.write('Warning, no PRESUBMIT.py found.\n')
     results = []
+    depot_tools = os.path.dirname(os.path.abspath(__file__))
+    python2_usage_log_file = os.path.join(depot_tools, 'python2_usage.txt')
+    if os.path.exists(python2_usage_log_file):
+      os.remove(python2_usage_log_file)
     thread_pool = ThreadPool()
     executer = PresubmitExecuter(change, committing, verbose, gerrit_obj,
-                                 dry_run, thread_pool, parallel, use_python3)
+                                 dry_run, thread_pool, parallel, use_python3,
+                                 no_diffs)
+    skipped_count = 0;
     if default_presubmit:
       if verbose:
         sys.stdout.write('Running default presubmit script.\n')
       fake_path = os.path.join(change.RepositoryRoot(), 'PRESUBMIT.py')
-      results += executer.ExecPresubmitScript(default_presubmit, fake_path)
+      if _ShouldRunPresubmit(default_presubmit, use_python3):
+        results += executer.ExecPresubmitScript(default_presubmit, fake_path)
+      else:
+        skipped_count += 1
     for filename in presubmit_files:
       filename = os.path.abspath(filename)
       if verbose:
         sys.stdout.write('Running %s\n' % filename)
       # Accept CRLF presubmit script.
-      presubmit_script = gclient_utils.FileRead(filename, 'rU')
-      results += executer.ExecPresubmitScript(presubmit_script, filename)
+      presubmit_script = gclient_utils.FileRead(filename).replace('\r\n', '\n')
+      if _ShouldRunPresubmit(presubmit_script, use_python3):
+        results += executer.ExecPresubmitScript(presubmit_script, filename)
+      else:
+        skipped_count += 1
+
     results += thread_pool.RunAsync()
+
+    if os.path.exists(python2_usage_log_file):
+      with open(python2_usage_log_file) as f:
+        python2_usage = [x.strip() for x in f.readlines()]
+        results.append(
+            OutputApi(committing).PresubmitPromptWarning(
+                'Python 2 scripts were run during %s presubmits. Please see '
+                'https://bugs.chromium.org/p/chromium/issues/detail?id=1313804'
+                '#c61 for tips on resolving this.'
+                % python_version,
+                items=python2_usage))
 
     messages = {}
     should_prompt = False
@@ -1705,20 +1787,23 @@ def DoPresubmitChecks(change,
       else:
         messages.setdefault('Messages', []).append(result)
 
-    sys.stdout.write('\n')
-    for name, items in messages.items():
-      sys.stdout.write('** Presubmit %s **\n' % name)
-      for item in items:
-        item.handle()
-        sys.stdout.write('\n')
+    # Print the different message types in a consistent order. ERRORS go last
+    # so that they will be most visible in the local-presubmit output.
+    for name in ['Messages', 'Warnings', 'ERRORS']:
+      if name in messages:
+        items = messages[name]
+        sys.stdout.write('** Presubmit %s: %d **\n' % (name, len(items)))
+        for item in items:
+          item.handle()
+          sys.stdout.write('\n')
 
     total_time = time_time() - start_time
     if total_time > 1.0:
       sys.stdout.write(
-          'Presubmit checks took %.1fs to calculate.\n\n' % total_time)
+          'Presubmit checks took %.1fs to calculate.\n' % total_time)
 
     if not should_prompt and not presubmits_failed:
-      sys.stdout.write('%s presubmit checks passed.\n' % python_version)
+      sys.stdout.write('%s presubmit checks passed.\n\n' % python_version)
     elif should_prompt and not presubmits_failed:
       sys.stdout.write('There were %s presubmit warnings. ' % python_version)
       if may_prompt:
@@ -1726,6 +1811,8 @@ def DoPresubmitChecks(change,
             'Are you sure you wish to continue? (y/N): ')
       else:
         sys.stdout.write('\n')
+    else:
+      sys.stdout.write('There were %s presubmit errors.\n' % python_version)
 
     if json_output:
       # Write the presubmit results to json output
@@ -1743,6 +1830,7 @@ def DoPresubmitChecks(change,
             for warning in messages.get('Warnings', [])
         ],
         'more_cc': executer.more_cc,
+        'skipped_presubmits': skipped_count,
       }
 
       gclient_utils.FileWrite(
@@ -1803,7 +1891,17 @@ def _parse_change(parser, options):
     parser.error('<files> is not optional for unversioned directories.')
 
   if options.files:
-    change_files = _parse_files(options.files, options.recursive)
+    if options.source_controlled_only:
+      # Get the filtered set of files from SCM.
+      change_files = []
+      for name in scm.GIT.GetAllFiles(options.root):
+        for mask in options.files:
+          if fnmatch.fnmatch(name, mask):
+            change_files.append(('M', name))
+            break
+    else:
+      # Get the filtered set of files from a directory scan.
+      change_files = _parse_files(options.files, options.recursive)
   elif options.all_files:
     change_files = [('M', f) for f in scm.GIT.GetAllFiles(options.root)]
   else:
@@ -1924,12 +2022,17 @@ def main(argv=None):
                       help='Write presubmit errors to json output.')
   parser.add_argument('--all_files', action='store_true',
                       help='Mark all files under source control as modified.')
+
   parser.add_argument('files', nargs='*',
                       help='List of files to be marked as modified when '
                       'executing presubmit or post-upload hooks. fnmatch '
                       'wildcards can also be used.')
+  parser.add_argument('--source_controlled_only', action='store_true',
+                      help='Constrain \'files\' to those in source control.')
   parser.add_argument('--use-python3', action='store_true',
                       help='Use python3 for presubmit checks by default')
+  parser.add_argument('--no_diffs', action='store_true',
+                      help='Assume that all "modified" files have no diffs.')
   options = parser.parse_args(argv)
 
   log_level = logging.ERROR
@@ -1948,10 +2051,8 @@ def main(argv=None):
 
   try:
     if options.post_upload:
-      return DoPostUploadExecuter(
-          change,
-          gerrit_obj,
-          options.verbose)
+      return DoPostUploadExecuter(change, gerrit_obj, options.verbose,
+                                  options.use_python3)
     with canned_check_filter(options.skip_canned):
       return DoPresubmitChecks(
           change,
@@ -1963,10 +2064,14 @@ def main(argv=None):
           options.dry_run,
           options.parallel,
           options.json_output,
-          options.use_python3)
+          options.use_python3,
+          options.no_diffs)
   except PresubmitFailure as e:
+    import utils
     print(e, file=sys.stderr)
     print('Maybe your depot_tools is out of date?', file=sys.stderr)
+    print('depot_tools version: %s' % utils.depot_tools_version(),
+          file=sys.stderr)
     return 2
 
 

@@ -226,6 +226,28 @@ from :3
 
 class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
 
+  @mock.patch('gclient_scm.GitWrapper._IsCog')
+  @mock.patch('gclient_scm.GitWrapper._Run', return_value=True)
+  @mock.patch('gclient_scm.GitWrapper._SetFetchConfig')
+  @mock.patch('gclient_scm.GitWrapper._GetCurrentBranch')
+  def testCloneInCog(self, mockGetCurrentBranch, mockSetFetchConfig, mockRun,
+                     _mockIsCog):
+    """Test that we call the correct commands when in a cog workspace."""
+    if not self.enabled:
+      return
+    options = self.Options()
+    scm = gclient_scm.GitWrapper(self.url, self.root_dir, self.relpath)
+    scm._Clone('123123ab', self.url, options)
+    mockRun.assert_called_once_with(
+        ['citc', 'clone-repo', self.url, scm.checkout_path, '123123ab'],
+        options,
+        cwd=scm._root_dir,
+        retry=True,
+        print_stdout=False,
+        filter_fn=scm.filter)
+    mockSetFetchConfig.assert_called_once()
+    mockGetCurrentBranch.assert_called_once()
+
   def testRevertMissing(self):
     if not self.enabled:
       return
@@ -1358,6 +1380,39 @@ class GerritChangesTest(fake_repos.FakeReposTestBase):
     self.assertNotEqual(self.githash('repo_1', 4),
                         self.gitrevparse(self.root_dir))
 
+  @mock.patch('gerrit_util.GetChange', return_value={'topic': 'test_topic'})
+  @mock.patch('gerrit_util.QueryChanges', return_value=[
+      {'_number': 1234},
+      {'_number': 1235, 'current_revision': 'abc',
+       'revisions': {'abc': {'ref': 'refs/changes/35/1235/1'}}}])
+  def testDownloadTopics(self, query_changes_mock, get_change_mock):
+    scm = gclient_scm.GitWrapper(self.url, self.root_dir, '.')
+    file_list = []
+
+    self.options.revision = 'refs/changes/34/1234/1'
+    scm.update(self.options, None, file_list)
+    self.assertEqual(self.githash('repo_1', 5), self.gitrevparse(self.root_dir))
+
+    # pylint: disable=attribute-defined-outside-init
+    self.options.download_topics = True
+    scm.url = 'https://test-repo.googlesource.com/repo_1.git'
+    scm.apply_patch_ref(
+        self.url, 'refs/changes/34/1234/1', 'refs/heads/main', self.options,
+        file_list)
+
+    get_change_mock.assert_called_once_with(
+        mock.ANY, '1234')
+    query_changes_mock.assert_called_once_with(
+        mock.ANY,
+        [('topic', 'test_topic'), ('status', 'open'), ('repo', 'repo_1')],
+        o_params=['ALL_REVISIONS'])
+
+    self.assertCommits([1, 2, 3, 5, 6])
+    # The commit hash after the two cherry-picks is not known, but it must be
+    # different from what the repo was synced at before patching.
+    self.assertNotEqual(self.githash('repo_1', 4),
+                        self.gitrevparse(self.root_dir))
+
   def testRecoversAfterPatchFailure(self):
     scm = gclient_scm.GitWrapper(self.url, self.root_dir, '.')
     file_list = []
@@ -1426,6 +1481,58 @@ class GerritChangesTest(fake_repos.FakeReposTestBase):
     self.assertCommits([1, 2, 3, 5, 6])
     self.assertEqual(self.githash('repo_1', 5), self.gitrevparse(self.root_dir))
 
+
+class DepsChangesFakeRepo(fake_repos.FakeReposBase):
+  def populateGit(self):
+    self._commit_git('repo_1', {'DEPS': 'versionA', 'doesnotmatter': 'B'})
+    self._commit_git('repo_1', {'DEPS': 'versionA', 'doesnotmatter': 'C'})
+
+    self._commit_git('repo_1', {'DEPS': 'versionB'})
+    self._commit_git('repo_1', {'DEPS': 'versionA', 'doesnotmatter': 'C'})
+    self._create_ref('repo_1', 'refs/heads/main', 4)
+
+
+class CheckDiffTest(fake_repos.FakeReposTestBase):
+  FAKE_REPOS_CLASS = DepsChangesFakeRepo
+
+  def setUp(self):
+    super(CheckDiffTest, self).setUp()
+    self.enabled = self.FAKE_REPOS.set_up_git()
+    self.options = BaseGitWrapperTestCase.OptionsObject()
+    self.url = self.git_base + 'repo_1'
+    self.mirror = None
+    mock.patch('sys.stdout', StringIO()).start()
+    self.addCleanup(mock.patch.stopall)
+
+  def setUpMirror(self):
+    self.mirror = tempfile.mkdtemp()
+    git_cache.Mirror.SetCachePath(self.mirror)
+    self.addCleanup(gclient_utils.rmtree, self.mirror)
+    self.addCleanup(git_cache.Mirror.SetCachePath, None)
+
+  def testCheckDiff(self):
+    """Correctly check for diffs."""
+    scm = gclient_scm.GitWrapper(self.url, self.root_dir, '.')
+    file_list = []
+
+    # Make sure we don't specify a revision.
+    self.options.revision = None
+    scm.update(self.options, None, file_list)
+    self.assertEqual(self.githash('repo_1', 4), self.gitrevparse(self.root_dir))
+
+    self.assertFalse(scm.check_diff(self.githash('repo_1', 1), files=['DEPS']))
+    self.assertTrue(scm.check_diff(self.githash('repo_1', 1)))
+    self.assertTrue(scm.check_diff(self.githash('repo_1', 3), files=['DEPS']))
+
+    self.assertFalse(
+        scm.check_diff(self.githash('repo_1', 2),
+                       files=['DEPS', 'doesnotmatter']))
+    self.assertFalse(scm.check_diff(self.githash('repo_1', 2)))
+
+
+if 'unittest.util' in __import__('sys').modules:
+  # Show full diff in self.assertEqual.
+  __import__('sys').modules['unittest.util']._MAX_LENGTH = 999999999
 
 if __name__ == '__main__':
   level = logging.DEBUG if '-v' in sys.argv else logging.FATAL

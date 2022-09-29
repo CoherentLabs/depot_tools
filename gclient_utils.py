@@ -95,6 +95,27 @@ def AddWarning(msg):
   _WARNINGS.append(msg)
 
 
+def FuzzyMatchRepo(repo, candidates):
+  # type: (str, Union[Collection[str], Mapping[str, Any]]) -> Optional[str]
+  """Attempts to find a representation of repo in the candidates.
+
+  Args:
+    repo: a string representation of a repo in the form of a url or the
+      name and path of the solution it represents.
+    candidates: The candidates to look through which may contain `repo` in
+      in any of the forms mentioned above.
+  Returns:
+    The matching string, if any, which may be in a different form from `repo`.
+  """
+  if repo in candidates:
+    return repo
+  if repo.endswith('.git') and repo[:-len('.git')] in candidates:
+    return repo[:-len('.git')]
+  if repo + '.git' in candidates:
+    return repo + '.git'
+  return None
+
+
 def SplitUrlRevision(url):
   """Splits url and returns a two-tuple: url, rev"""
   if url.startswith('ssh:'):
@@ -109,6 +130,15 @@ def SplitUrlRevision(url):
     if len(components) == 1:
       components += [None]
   return tuple(components)
+
+
+def ExtractRefName(remote, full_refs_str):
+  """Returns the ref name if full_refs_str is a valid ref."""
+  result = re.compile(r'^refs(\/.+)?\/((%s)|(heads)|(tags))\/(?P<ref_name>.+)' %
+                      remote).match(full_refs_str)
+  if result:
+    return result.group('ref_name')
+  return None
 
 
 def IsGitSha(revision):

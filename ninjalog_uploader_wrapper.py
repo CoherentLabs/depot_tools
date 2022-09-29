@@ -23,7 +23,16 @@ VERSION = 3
 def LoadConfig():
   if os.path.isfile(CONFIG):
     with open(CONFIG, 'r') as f:
-      config = json.load(f)
+      try:
+        config = json.load(f)
+      except Exception:
+        # Set default value when failed to load config.
+        config = {
+            'is-googler': ninjalog_uploader.IsGoogler(),
+            'countdown': 10,
+            'version': VERSION,
+        }
+
       if config['version'] == VERSION:
         config['countdown'] = max(0, config['countdown'] - 1)
         return config
@@ -55,7 +64,7 @@ The following information will be uploaded with ninjalog.
 * following build configs
 %s
 
-Uploading ninjalog will be started after you run autoninja another %d time.
+Uploading ninjalog will be started after you run autoninja another %d time(s).
 
 If you don't want to upload ninjalog, please run following command.
 $ python3 %s opt-out

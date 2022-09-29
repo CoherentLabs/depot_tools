@@ -40,10 +40,14 @@ OFF_BY_DEFAULT_LINT_FILTERS = [
 # Justifications for each filter:
 # - build/c++11         : Include file and feature blocklists are
 #                         google3-specific
+# - build/header_guard  : Checked by CheckForIncludeGuards
+# - readability/todo    : Chromium puts bug links, not usernames, in TODOs
 # - runtime/references  : No longer banned by Google style guide
 # - whitespace/...      : Most whitespace issues handled by clang-format
 OFF_UNLESS_MANUALLY_ENABLED_LINT_FILTERS = [
     '-build/c++11',
+    '-build/header_guard',
+    '-readability/todo',
     '-runtime/references',
     '-whitespace/braces',
     '-whitespace/comma',
@@ -107,7 +111,7 @@ def CheckChangeHasDescription(input_api, output_api):
   """Checks the CL description is not empty."""
   text = input_api.change.DescriptionText()
   if text.strip() == '':
-    if input_api.is_committing:
+    if input_api.is_committing and not input_api.no_diffs:
       return [output_api.PresubmitError('Add a description to the CL.')]
 
     return [output_api.PresubmitNotifyResult('Add a description to the CL.')]
@@ -117,8 +121,11 @@ def CheckChangeHasDescription(input_api, output_api):
 def CheckChangeWasUploaded(input_api, output_api):
   """Checks that the issue was uploaded before committing."""
   if input_api.is_committing and not input_api.change.issue:
-    return [output_api.PresubmitError(
-      'Issue wasn\'t uploaded. Please upload first.')]
+    message = 'Issue wasn\'t uploaded. Please upload first.'
+    if input_api.no_diffs:
+      # Make this just a message with presubmit --all and --files
+      return [output_api.PresubmitNotifyResult(message)]
+    return [output_api.PresubmitError(message)]
   return []
 
 
@@ -227,6 +234,20 @@ def CheckChangeLintsClean(input_api, output_api, source_file_filter=None,
 
   cpplint._SetFilters(','.join(GetCppLintFilters(lint_filters)))
 
+  # Use VS error format on Windows to make it easier to step through the
+  # results.
+  if input_api.platform == 'win32':
+    cpplint._SetOutputFormat('vs7')
+
+  if source_file_filter == None:
+    # The only valid extensions for cpplint are .cc, .h, .cpp, .cu, and .ch.
+    # Only process those extensions which are used in Chromium.
+    INCLUDE_CPP_FILES_ONLY = (r'.*\.(cc|h|cpp)$', )
+    source_file_filter = lambda x: input_api.FilterSourceFile(
+        x,
+        files_to_check=INCLUDE_CPP_FILES_ONLY,
+        files_to_skip=input_api.DEFAULT_FILES_TO_SKIP)
+
   # We currently are more strict with normal code than unit tests; 4 and 5 are
   # the verbosity level that would normally be passed to cpplint.py through
   # --verbose=#. Hopefully, in the future, we can be more verbose.
@@ -246,7 +267,10 @@ def CheckChangeLintsClean(input_api, output_api, source_file_filter=None,
       res_type = output_api.PresubmitError
     else:
       res_type = output_api.PresubmitPromptWarning
-    result = [res_type('Changelist failed cpplint.py check.')]
+    result = [
+        res_type('Changelist failed cpplint.py check. '
+                 'Search the output for "(cpplint)"')
+    ]
 
   return result
 
@@ -308,6 +332,9 @@ def CheckGenderNeutral(input_api, output_api, source_file_filter=None):
   """Checks that there are no gendered pronouns in any of the text files to be
   submitted.
   """
+  if input_api.no_diffs:
+    return []
+
   gendered_re = input_api.re.compile(
       r'(^|\s|\(|\[)([Hh]e|[Hh]is|[Hh]ers?|[Hh]im|[Ss]he|[Gg]uys?)\\b')
 
@@ -401,6 +428,8 @@ def _FindNewViolationsOfRule(callable_rule,
   Returns:
     A list of the newly-introduced violations reported by the rule.
   """
+  if input_api.no_diffs:
+    return []
   return _FindNewViolationsOfRuleForList(
       callable_rule, _GenerateAffectedFileExtList(
           input_api, source_file_filter), error_formatter)
@@ -457,6 +486,8 @@ def CheckLongLines(input_api, output_api, maxlen, source_file_filter=None):
   """Checks that there aren't any lines longer than maxlen characters in any of
   the text files to be submitted.
   """
+  if input_api.no_diffs:
+    return []
   maxlens = {
       'java': 100,
       # This is specifically for Android's handwritten makefiles (Android.mk).
@@ -584,7 +615,8 @@ def CheckLongLines(input_api, output_api, maxlen, source_file_filter=None):
     errors += check_python_long_lines(
         py_file_list, error_formatter=format_error)
   if errors:
-    msg = 'Found lines longer than %s characters (first 5 shown).' % maxlen
+    msg = 'Found %d lines longer than %s characters (first 5 shown).' % (
+           len(errors), maxlen)
     return [output_api.PresubmitPromptWarning(msg, items=errors[:5])]
 
   return []
@@ -595,26 +627,38 @@ def CheckLicense(input_api, output_api, license_re=None, project_name=None,
   """Verifies the license header.
   """
 
-  project_name = project_name or 'Chromium'
+  # Early-out if the license_re is guaranteed to match everything.
+  if license_re and license_re == '.*':
+    return []
 
-  # Accept any year number from 2006 to the current year, or the special
-  # 2006-20xx string used on the oldest files. 2006-20xx is deprecated, but
-  # tolerated on old files.
-  current_year = int(input_api.time.strftime('%Y'))
-  allowed_years = (str(s) for s in reversed(range(2006, current_year + 1)))
-  years_re = '(' + '|'.join(allowed_years) + '|2006-2008|2006-2009|2006-2010)'
+  key_line = None
+  if not license_re:
+    project_name = project_name or 'Chromium'
 
-  # The (c) is deprecated, but tolerate it until it's removed from all files.
-  license_re = license_re or (
-      r'.*? Copyright (\(c\) )?%(year)s The %(project)s Authors\. '
-        r'All rights reserved\.\r?\n'
-      r'.*? Use of this source code is governed by a BSD-style license that '
-        r'can be\r?\n'
-      r'.*? found in the LICENSE file\.(?: \*/)?\r?\n'
-  ) % {
-      'year': years_re,
-      'project': project_name,
-  }
+    # Accept any year number from 2006 to the current year, or the special
+    # 2006-20xx string used on the oldest files. 2006-20xx is deprecated, but
+    # tolerated on old files.
+    current_year = int(input_api.time.strftime('%Y'))
+    allowed_years = (str(s) for s in reversed(range(2006, current_year + 1)))
+    years_re = '(' + '|'.join(allowed_years) + '|2006-2008|2006-2009|2006-2010)'
+
+    # A file that lacks this line necessarily lacks a compatible license.
+    # Checking for this line lets us avoid the cost of a complex regex across a
+    # possibly large file. This has been seen to save 50+ seconds on a single
+    # file.
+    key_line = ('Use of this source code is governed by a BSD-style license '
+               'that can be')
+    # The (c) is deprecated, but tolerate it until it's removed from all files.
+    license_re = (
+        r'.*? Copyright (\(c\) )?%(year)s The %(project)s Authors\. '
+          r'All rights reserved\.\r?\n'
+        r'.*? %(key_line)s\r?\n'
+        r'.*? found in the LICENSE file\.(?: \*/)?\r?\n'
+    ) % {
+        'year': years_re,
+        'project': project_name,
+        'key_line' : key_line,
+    }
 
   license_re = input_api.re.compile(license_re, input_api.re.MULTILINE)
   bad_files = []
@@ -622,7 +666,10 @@ def CheckLicense(input_api, output_api, license_re=None, project_name=None,
     contents = input_api.ReadFile(f, 'r')
     if accept_empty_files and not contents:
       continue
-    if not license_re.search(contents):
+    # Search for key_line first to avoid fruitless and expensive regex searches.
+    if (key_line and not key_line in contents):
+      bad_files.append(f.LocalPath())
+    elif not license_re.search(contents):
       bad_files.append(f.LocalPath())
   if bad_files:
     return [output_api.PresubmitPromptWarning(
@@ -665,6 +712,10 @@ def CheckTreeIsOpen(input_api, output_api,
       if not status['can_commit_freely']:
         short_text = 'Tree state is: ' + status['general_state']
         long_text = status['message'] + '\n' + json_url
+        if input_api.no_diffs:
+          return [
+              output_api.PresubmitPromptWarning(short_text, long_text=long_text)
+          ]
         return [output_api.PresubmitError(short_text, long_text=long_text)]
     else:
       # TODO(bradnelson): drop this once all users are gone.
@@ -745,8 +796,9 @@ def GetUnitTests(input_api,
       maybe_shebang = f.readline()
     return maybe_shebang.startswith('#!') and 'python3' in maybe_shebang
 
-  # We don't want to hinder users from uploading incomplete patches.
-  if input_api.is_committing:
+  # We don't want to hinder users from uploading incomplete patches, but we do
+  # want to report errors as errors when doing presubmit --all testing.
+  if input_api.is_committing or input_api.no_diffs:
     message_type = output_api.PresubmitError
   else:
     message_type = output_api.PresubmitPromptWarning
@@ -788,10 +840,9 @@ def GetUnitTests(input_api,
             message=message_type))
         test_run = True
       if not test_run:
-        output_api.PresubmitPromptWarning(
-            "Some python tests were not run. You may need to add\n"
-            "skip_shebang_check=True for python3 tests.",
-            items=unit_test)
+        results.append(output_api.PresubmitError(
+            "The %s test was not run. You may need to add\n"
+            "skip_shebang_check=True for python3 tests." % unit_test))
   return results
 
 
@@ -836,7 +887,7 @@ def GetUnitTestsRecursively(input_api,
                       skip_shebang_check=skip_shebang_check)
 
 
-def GetPythonUnitTests(input_api, output_api, unit_tests):
+def GetPythonUnitTests(input_api, output_api, unit_tests, python3=False):
   """Run the unit tests out of process, capture the output and use the result
   code to determine success.
 
@@ -875,7 +926,10 @@ def GetPythonUnitTests(input_api, output_api, unit_tests):
         backpath.append(env.get('PYTHONPATH'))
       env['PYTHONPATH'] = input_api.os_path.pathsep.join((backpath))
       env.pop('VPYTHON_CLEAR_PYTHONPATH', None)
-    cmd = [input_api.python_executable, '-m', '%s' % unit_test]
+    if python3:
+      cmd = [input_api.python3_executable, '-m', '%s' % unit_test]
+    else:
+      cmd = [input_api.python_executable, '-m', '%s' % unit_test]
     results.append(input_api.Command(
         name=unit_test_name,
         cmd=cmd,
@@ -950,7 +1004,7 @@ def GetPylint(input_api,
               disabled_warnings=None,
               extra_paths_list=None,
               pylintrc=None,
-              version='1.5'):
+              version='2.7'):
   """Run pylint on python files.
 
   The default files_to_check enforces looking only at *.py files.
@@ -1040,8 +1094,12 @@ def GetPylint(input_api,
       args.extend(extra)
       description += ' using %s' % (extra,)
     if parallel:
-      args.append('--jobs=%s' % input_api.cpu_count)
-      description += ' on %d cores' % input_api.cpu_count
+      # Make sure we don't request more parallelism than is justified for the
+      # number of files we have to process. PyLint child-process startup time is
+      # significant.
+      jobs = min(input_api.cpu_count, 1 + len(flist) // 10)
+      args.append('--jobs=%s' % jobs)
+      description += ' on %d processes' % jobs
 
     kwargs['stdin'] = '\n'.join(args + flist)
     if input_api.sys.version_info.major != 2:
@@ -1054,28 +1112,27 @@ def GetPylint(input_api,
         message=error_type,
         python3=not python2)
 
-  # Always run pylint and pass it all the py files at once.
-  # Passing py files one at time is slower and can produce
-  # different results.  input_api.verbose used to be used
-  # to enable this behaviour but differing behaviour in
-  # verbose mode is not desirable.
-  # Leave this unreachable code in here so users can make
-  # a quick local edit to diagnose pylint issues more
-  # easily.
-  if True:
-    # pylint's cycle detection doesn't work in parallel, so spawn a second,
-    # single-threaded job for just that check.
+  # pylint's cycle detection doesn't work in parallel, so spawn a second,
+  # single-threaded job for just that check.
+  # Some PRESUBMITs explicitly mention cycle detection.
+  if not any('R0401' in a or 'cyclic-import' in a for a in extra_args):
+    tests = [
+      GetPylintCmd(files, ["--disable=cyclic-import"], True),
+      GetPylintCmd(files, ["--disable=all", "--enable=cyclic-import"], False),
+    ]
+  else:
+    tests = [
+        GetPylintCmd(files, [], True),
+    ]
+  if version == '1.5':
+    # Warn users about pylint-1.5 deprecation
+    tests.append(
+        output_api.PresubmitPromptWarning(
+            'pylint-1.5 is being run on %s and is deprecated, please switch '
+            'to 2.7 before 2022-07-11 (add version=\'2.7\' to RunPylint call)'
+            % input_api.PresubmitLocalPath()))
 
-    # Some PRESUBMITs explicitly mention cycle detection.
-    if not any('R0401' in a or 'cyclic-import' in a for a in extra_args):
-      return [
-        GetPylintCmd(files, ["--disable=cyclic-import"], True),
-        GetPylintCmd(files, ["--disable=all", "--enable=cyclic-import"], False)
-      ]
-
-    return [ GetPylintCmd(files, [], True) ]
-
-  return map(lambda x: GetPylintCmd([x], [], 1), files)
+  return tests
 
 
 def RunPylint(input_api, *args, **kwargs):
@@ -1101,18 +1158,39 @@ def CheckDirMetadataFormat(input_api, output_api, dirmd_bin=None):
     return []
 
   name = 'Validate metadata in OWNERS and DIR_METADATA files'
-  kwargs = {}
 
   if dirmd_bin is None:
     dirmd_bin = 'dirmd.bat' if input_api.is_windows else 'dirmd'
-  cmd = [dirmd_bin, 'validate'] + sorted(affected_files)
 
-  return [input_api.Command(
-      name, cmd, kwargs, output_api.PresubmitError)]
+  # When running git cl presubmit --all this presubmit may be asked to check
+  # ~7,500 files, leading to a command line that is about 500,000 characters.
+  # This goes past the Windows 8191 character cmd.exe limit and causes cryptic
+  # failures. To avoid these we break the command up into smaller pieces. The
+  # non-Windows limit is chosen so that the code that splits up commands will
+  # get some exercise on other platforms.
+  # Depending on how long the command is on Windows the error may be:
+  #     The command line is too long.
+  # Or it may be:
+  #     OSError: Execution failed with error: [WinError 206] The filename or
+  #     extension is too long.
+  # I suspect that the latter error comes from CreateProcess hitting its 32768
+  # character limit.
+  files_per_command = 50 if input_api.is_windows else 1000
+  affected_files = sorted(affected_files)
+  results = []
+  for i in range(0, len(affected_files), files_per_command):
+    kwargs = {}
+    cmd = [dirmd_bin, 'validate'] + affected_files[i : i + files_per_command]
+    results.extend([input_api.Command(
+        name, cmd, kwargs, output_api.PresubmitError)])
+  return results
 
 
 def CheckNoNewMetadataInOwners(input_api, output_api):
   """Check that no metadata is added to OWNERS files."""
+  if input_api.no_diffs:
+    return []
+
   _METADATA_LINE_RE = input_api.re.compile(
       r'^#\s*(TEAM|COMPONENT|OS|WPT-NOTIFY)+\s*:\s*\S+$',
       input_api.re.MULTILINE | input_api.re.IGNORECASE)
@@ -1204,7 +1282,7 @@ def CheckOwners(
   if input_api.gerrit and input_api.gerrit.IsCodeOwnersEnabledOnRepo():
     return []
 
-  affected_files = {f.LocalPath() for f in 
+  affected_files = {f.LocalPath() for f in
                     input_api.change.AffectedFiles(
                         file_filter=source_file_filter)}
   owner_email, reviewers = GetCodereviewOwnerAndReviewers(
@@ -1306,7 +1384,7 @@ def CheckSingletonInHeaders(input_api, output_api, source_file_filter=None):
 def PanProjectChecks(input_api, output_api,
                      excluded_paths=None, text_files=None,
                      license_header=None, project_name=None,
-                     owners_check=True, maxlen=80):
+                     owners_check=True, maxlen=80, global_checks=True):
   """Checks that ALL chromium orbit projects should use.
 
   These are checks to be run on all Chromium orbit project, including:
@@ -1321,6 +1399,11 @@ def PanProjectChecks(input_api, output_api,
     text_files: Which file are to be treated as documentation text files.
     license_header: What license header should be on files.
     project_name: What is the name of the project as it appears in the license.
+    global_checks: If True run checks that are unaffected by other options or by
+      the PRESUBMIT script's location, such as CheckChangeHasDescription.
+      global_checks should be passed as False when this function is called from
+      locations other than the project's root PRESUBMIT.py, to avoid redundant
+      checking.
   Returns:
     A list of warning or error objects.
   """
@@ -1344,24 +1427,24 @@ def PanProjectChecks(input_api, output_api,
   snapshot_memory = []
   def snapshot(msg):
     """Measures & prints performance warning if a rule is running slow."""
-    if input_api.sys.version_info.major == 2:
-      dt2 = input_api.time.clock()
-    else:
-      dt2 = input_api.time.process_time()
+    dt2 = input_api.time.time()
     if snapshot_memory:
-      delta_ms = int(1000*(dt2 - snapshot_memory[0]))
-      if delta_ms > 500:
-        print("  %s took a long time: %dms" % (snapshot_memory[1], delta_ms))
+      delta_s = dt2 - snapshot_memory[0]
+      if delta_s > 0.5:
+        print("  %s took a long time: %.1fs" % (snapshot_memory[1], delta_s))
     snapshot_memory[:] = (dt2, msg)
 
   snapshot("checking owners files format")
-  results.extend(input_api.canned_checks.CheckOwnersFormat(
-      input_api, output_api))
+  try:
+    results.extend(input_api.canned_checks.CheckOwnersFormat(
+        input_api, output_api))
 
-  if owners_check:
-    snapshot("checking owners")
-    results.extend(input_api.canned_checks.CheckOwners(
-        input_api, output_api, source_file_filter=None))
+    if owners_check:
+      snapshot("checking owners")
+      results.extend(input_api.canned_checks.CheckOwners(
+          input_api, output_api, source_file_filter=None))
+  except Exception as e:
+    print('Failed to check owners - %s' % str(e))
 
   snapshot("checking long lines")
   results.extend(input_api.canned_checks.CheckLongLines(
@@ -1378,21 +1461,26 @@ def PanProjectChecks(input_api, output_api,
       source_file_filter=sources))
 
   if input_api.is_committing:
-    snapshot("checking was uploaded")
-    results.extend(input_api.canned_checks.CheckChangeWasUploaded(
-        input_api, output_api))
-    snapshot("checking description")
-    results.extend(input_api.canned_checks.CheckChangeHasDescription(
-        input_api, output_api))
-    results.extend(input_api.canned_checks.CheckDoNotSubmitInDescription(
-        input_api, output_api))
+    if global_checks:
+      # These changes verify state that is global to the tree and can therefore
+      # be skipped when run from PRESUBMIT.py scripts deeper in the tree.
+      # Skipping these saves a bit of time and avoids having redundant output.
+      # This was initially designed for use by third_party/blink/PRESUBMIT.py.
+      snapshot("checking was uploaded")
+      results.extend(input_api.canned_checks.CheckChangeWasUploaded(
+          input_api, output_api))
+      snapshot("checking description")
+      results.extend(input_api.canned_checks.CheckChangeHasDescription(
+          input_api, output_api))
+      results.extend(input_api.canned_checks.CheckDoNotSubmitInDescription(
+          input_api, output_api))
+      if input_api.change.scm == 'git':
+        snapshot("checking for commit objects in tree")
+        results.extend(input_api.canned_checks.CheckForCommitObjects(
+            input_api, output_api))
     snapshot("checking do not submit in files")
     results.extend(input_api.canned_checks.CheckDoNotSubmitInFiles(
         input_api, output_api))
-    if input_api.change.scm == 'git':
-      snapshot("checking for commit objects in tree")
-      results.extend(input_api.canned_checks.CheckForCommitObjects(
-          input_api, output_api))
   snapshot("done")
   return results
 
@@ -1425,6 +1513,11 @@ def CheckPatchFormatted(input_api,
 
   cmd = ['-C', input_api.change.RepositoryRoot(),
          'cl', 'format', '--dry-run', '--presubmit'] + display_args
+
+  # Make sure the passed --upstream branch is applied to a dry run.
+  if input_api.change.UpstreamBranch():
+    cmd.extend(['--upstream', input_api.change.UpstreamBranch()])
+
   presubmit_subdir = input_api.os_path.relpath(
       input_api.PresubmitLocalPath(), input_api.change.RepositoryRoot())
   if presubmit_subdir.startswith('..') or presubmit_subdir == '.':
@@ -1434,6 +1527,7 @@ def CheckPatchFormatted(input_api,
   # contains the PRESUBMIT.py.
   if presubmit_subdir:
     cmd.append(input_api.PresubmitLocalPath())
+
   code, _ = git_cl.RunGitWithCode(cmd, suppress_stderr=bypass_warnings)
   # bypass_warnings? Only fail with code 2.
   # As this is just a warning, ignore all other errors if the user
@@ -1875,6 +1969,8 @@ def CheckInclusiveLanguage(input_api, output_api,
   # ANGLE), but this particular check only makes sense for changes to
   # chromium/src.
   if input_api.change.RepositoryRoot() != input_api.PresubmitLocalPath():
+    return []
+  if input_api.no_diffs:
     return []
 
   warnings = []

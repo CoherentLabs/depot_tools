@@ -94,6 +94,14 @@ class TryserverApi(recipe_api.RecipeApi):
     """
     return self._gerrit_change_owner
 
+  @property
+  def gerrit_change_review_url(self):
+    """Returns the review URL for the active patchset."""
+    # Gerrit redirects to insert the project into the URL.
+    gerrit_change = self._gerrit_change
+    return 'https://%s/c/%s/%s' % (
+          gerrit_change.host, gerrit_change.change, gerrit_change.patchset)
+
   def _ensure_gerrit_change_info(self):
     """Initializes extra info about gerrit_change, fetched from Gerrit server.
 
@@ -245,7 +253,7 @@ class TryserverApi(recipe_api.RecipeApi):
             self.m.raw_io.test_api.stream_output('foo.cc'),
           **kwargs)
     paths = [self.m.path.join(patch_root, p.decode('utf-8')) for p in
-             step_result.stdout.split()]
+             step_result.stdout.splitlines()]
     paths.sort()
     if self.m.platform.is_win:
       # Looks like "analyze" wants POSIX slashes even on Windows (since git
@@ -356,10 +364,12 @@ class TryserverApi(recipe_api.RecipeApi):
         'No patch text or associated changelist, cannot get footers')  #pragma: nocover
 
   def _get_footer_step(self, patch_text):
-    result = self.m.python(
-        'parse description', self.repo_resource('git_footers.py'),
-        args=['--json', self.m.json.output()],
-        stdin=self.m.raw_io.input(data=patch_text))
+    result = self.m.step('parse description', [
+        'python3',
+        self.repo_resource('git_footers.py'), '--json',
+        self.m.json.output()
+    ],
+                         stdin=self.m.raw_io.input(data=patch_text))
     return result.json.output
 
   def get_footer(self, tag, patch_text=None):

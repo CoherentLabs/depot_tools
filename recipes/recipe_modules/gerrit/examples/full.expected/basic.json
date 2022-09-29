@@ -1,8 +1,7 @@
 [
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "branch",
       "--host",
@@ -32,8 +31,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "branchinfo",
       "--host",
@@ -60,8 +58,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "tag",
       "--host",
@@ -91,8 +88,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "rawapi",
       "--host",
@@ -124,8 +120,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "movechanges",
       "--host",
@@ -154,6 +149,7 @@
       "@@@STEP_LOG_LINE@json.output@    \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@    \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@      \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -172,8 +168,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "createchange",
       "--host",
@@ -203,6 +198,7 @@
       "@@@STEP_LOG_LINE@json.output@  \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@  \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@    \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -225,7 +221,7 @@
   },
   {
     "cmd": [
-      "vpython",
+      "vpython3",
       "-u",
       "RECIPE_MODULE[recipe_engine::file]/resources/fileutil.py",
       "--json-output",
@@ -242,8 +238,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changeedit",
       "--host",
@@ -266,8 +261,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "publishchangeedit",
       "--host",
@@ -287,8 +281,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",
@@ -324,8 +317,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",
@@ -355,6 +347,7 @@
       "@@@STEP_LOG_LINE@json.output@    \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@    \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@      \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -373,8 +366,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "setbotcommit",
       "--host",
@@ -390,8 +382,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "submitchange",
       "--host",
@@ -413,6 +404,7 @@
       "@@@STEP_LOG_LINE@json.output@  \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@  \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@  \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@    \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -430,8 +422,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",
@@ -462,6 +453,7 @@
       "@@@STEP_LOG_LINE@json.output@    \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@    \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@      \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -480,8 +472,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "relatedchanges",
       "--host",
@@ -531,8 +522,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",
@@ -558,8 +548,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",
@@ -588,6 +577,7 @@
       "@@@STEP_LOG_LINE@json.output@    \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@    \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@      \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -606,8 +596,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "setlabel",
       "--host",
@@ -633,8 +622,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "setlabel",
       "--host",
@@ -660,8 +648,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "abandon",
       "--host",
@@ -686,6 +673,7 @@
       "@@@STEP_LOG_LINE@json.output@    \"change_id\": \"Ideadbeef\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"created\": \"2017-01-30 13:11:20.000000000\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"has_review_started\": false, @@@",
+      "@@@STEP_LOG_LINE@json.output@    \"id\": \"fully~qualified~changeid\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"project\": \"chromium/src\", @@@",
       "@@@STEP_LOG_LINE@json.output@    \"revisions\": {@@@",
       "@@@STEP_LOG_LINE@json.output@      \"184ebe53805e102605d11f6b143486d15c23a09c\": {@@@",
@@ -704,8 +692,7 @@
   },
   {
     "cmd": [
-      "vpython",
-      "-u",
+      "vpython3",
       "RECIPE_REPO[depot_tools]/gerrit_client.py",
       "changes",
       "--host",

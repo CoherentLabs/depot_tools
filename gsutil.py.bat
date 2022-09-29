@@ -10,8 +10,8 @@ IF "%DEPOT_TOOLS_UPDATE%" == "0" GOTO :CALL_GSUTIL
 :: Synchronize the root directory before deferring control back to gsutil.py.
 call "%~dp0update_depot_tools.bat" %*
 :: Abort the script if we failed to update depot_tools.
-IF %errorlevel% NEQ 0 (
-  goto :EOF
+IF %ERRORLEVEL% NEQ 0 (
+  exit /b %ERRORLEVEL%
 )
 
 :CALL_GSUTIL
@@ -20,4 +20,4 @@ IF %errorlevel% NEQ 0 (
 set PATH=%PATH%;%~dp0
 
 :: Defer control.
-python "%~dp0gsutil.py" %*
+python3 "%~dp0gsutil.py" %*

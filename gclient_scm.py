@@ -26,6 +26,7 @@ except ImportError:  # For Py3 compatibility
   import urllib.parse as urlparse
 
 import gclient_utils
+import gerrit_util
 import git_cache
 import scm
 import shutil
@@ -207,6 +208,16 @@ class GitWrapper(SCMWrapper):
   name = 'git'
   remote = 'origin'
 
+  _is_env_cog = None
+
+  @staticmethod
+  def _IsCog():
+    """Returns true if the env is cog"""
+    if not GitWrapper._is_env_cog:
+      GitWrapper._is_env_cog = os.getcwd().startswith('/google/src/cloud')
+
+    return GitWrapper._is_env_cog
+
   @property
   def cache_dir(self):
     try:
@@ -334,8 +345,61 @@ class GitWrapper(SCMWrapper):
               self.Print('FAILED to break lock: %s: %s' % (to_break, ex))
               raise
 
+  def _download_topics(self, patch_rev, googlesource_url):
+    """This method returns new patch_revs to process that have the same topic.
+
+    It does the following:
+    1. Finds the topic of the Gerrit change specified in the patch_rev.
+    2. Find all changes with that topic.
+    3. Append patch_rev of the changes with the same topic to the patch_revs
+       to process.
+    4. Returns the new patch_revs to process.
+    """
+    patch_revs_to_process = []
+    # Parse the patch_rev to extract the CL and patchset.
+    patch_rev_tokens = patch_rev.split('/')
+    change = patch_rev_tokens[-2]
+    # Parse the googlesource_url.
+    tokens = re.search(
+        '//(.+).googlesource.com/(.+?)(?:\.git)?$', googlesource_url)
+    if not tokens or len(tokens.groups()) != 2:
+      # googlesource_url is not in the expected format.
+      return patch_revs_to_process
+
+    # parse the gerrit host and repo out of googlesource_url.
+    host, repo = tokens.groups()[:2]
+    gerrit_host_url = '%s-review.googlesource.com' % host
+
+    # 1. Find the topic of the Gerrit change specified in the patch_rev.
+    change_object = gerrit_util.GetChange(gerrit_host_url, change)
+    topic = change_object.get('topic')
+    if not topic:
+      # This change has no topic set.
+      return patch_revs_to_process
+
+    # 2. Find all changes with that topic.
+    changes_with_same_topic = gerrit_util.QueryChanges(
+        gerrit_host_url,
+        [('topic', topic), ('status', 'open'), ('repo', repo)],
+        o_params=['ALL_REVISIONS'])
+    for c in changes_with_same_topic:
+      if str(c['_number']) == change:
+        # This change is already in the patch_rev.
+        continue
+      self.Print('Found CL %d with the topic name %s' % (
+          c['_number'], topic))
+      # 3. Append patch_rev of the changes with the same topic to the
+      #    patch_revs to process.
+      curr_rev = c['current_revision']
+      new_patch_rev = c['revisions'][curr_rev]['ref']
+      patch_revs_to_process.append(new_patch_rev)
+
+    # 4. Return the new patch_revs to process.
+    return patch_revs_to_process
+
   def apply_patch_ref(self, patch_repo, patch_rev, target_rev, options,
                       file_list):
+    # type: (str, str, str, optparse.Values, Collection[str]) -> str
     """Apply a patch on top of the revision we're synced at.
 
     The patch ref is given by |patch_repo|@|patch_rev|.
@@ -377,7 +441,7 @@ class GitWrapper(SCMWrapper):
     except subprocess2.CalledProcessError:
       pass
 
-    base_rev = self._Capture(['rev-parse', 'HEAD'])
+    base_rev = self.revinfo(None, None, None)
 
     if not target_rev:
       raise gclient_utils.Error('A target revision for the patch must be given')
@@ -404,60 +468,95 @@ class GitWrapper(SCMWrapper):
         self._UpdateMirrorIfNotContains(mirror, options, rev_type, target_rev)
       self._Fetch(options, refspec=target_rev)
 
-    self.Print('===Applying patch===')
-    self.Print('Revision to patch is %r @ %r.' % (patch_repo, patch_rev))
-    self.Print('Current dir is %r' % self.checkout_path)
+    patch_revs_to_process = [patch_rev]
+
+    if hasattr(options, 'download_topics') and options.download_topics:
+      patch_revs_to_process_from_topics = self._download_topics(
+          patch_rev, self.url)
+      patch_revs_to_process.extend(patch_revs_to_process_from_topics)
+
     self._Capture(['reset', '--hard'])
-    self._Capture(['fetch', '--no-tags', patch_repo, patch_rev])
-    patch_rev = self._Capture(['rev-parse', 'FETCH_HEAD'])
+    for pr in patch_revs_to_process:
+      self.Print('===Applying patch===')
+      self.Print('Revision to patch is %r @ %r.' % (patch_repo, pr))
+      self.Print('Current dir is %r' % self.checkout_path)
+      self._Capture(['fetch', '--no-tags', patch_repo, pr])
+      pr = self._Capture(['rev-parse', 'FETCH_HEAD'])
 
-    if not options.rebase_patch_ref:
-      self._Capture(['checkout', patch_rev])
-      # Adjust base_rev to be the first parent of our checked out patch ref;
-      # This will allow us to correctly extend `file_list`, and will show the
-      # correct file-list to programs which do `git diff --cached` expecting to
-      # see the patch diff.
-      base_rev = self._Capture(['rev-parse', patch_rev+'~'])
-
-    else:
-      self.Print('Will cherrypick %r .. %r on top of %r.' % (
-          target_rev, patch_rev, base_rev))
-      try:
-        if scm.GIT.IsAncestor(self.checkout_path, patch_rev, target_rev):
-          # If |patch_rev| is an ancestor of |target_rev|, check it out.
-          self._Capture(['checkout', patch_rev])
-        else:
-          # If a change was uploaded on top of another change, which has already
-          # landed, one of the commits in the cherry-pick range will be
-          # redundant, since it has already landed and its changes incorporated
-          # in the tree.
-          # We pass '--keep-redundant-commits' to ignore those changes.
-          self._Capture(['cherry-pick', target_rev + '..' + patch_rev,
-                         '--keep-redundant-commits'])
-
-      except subprocess2.CalledProcessError as e:
-        self.Print('Failed to apply patch.')
-        self.Print('Revision to patch was %r @ %r.' % (patch_repo, patch_rev))
-        self.Print('Tried to cherrypick %r .. %r on top of %r.' % (
-            target_rev, patch_rev, base_rev))
-        self.Print('Current dir is %r' % self.checkout_path)
-        self.Print('git returned non-zero exit status %s:\n%s' % (
-            e.returncode, e.stderr.decode('utf-8')))
-        # Print the current status so that developers know what changes caused
-        # the patch failure, since git cherry-pick doesn't show that
-        # information.
-        self.Print(self._Capture(['status']))
+      if not options.rebase_patch_ref:
+        self._Capture(['checkout', pr])
+        # Adjust base_rev to be the first parent of our checked out patch ref;
+        # This will allow us to correctly extend `file_list`, and will show the
+        # correct file-list to programs which do `git diff --cached` expecting
+        # to see the patch diff.
+        base_rev = self._Capture(['rev-parse', pr+'~'])
+      else:
+        self.Print('Will cherrypick %r .. %r on top of %r.' % (
+            target_rev, pr, base_rev))
         try:
-          self._Capture(['cherry-pick', '--abort'])
-        except subprocess2.CalledProcessError:
-          pass
-        raise
+          if scm.GIT.IsAncestor(self.checkout_path, pr, target_rev):
+            if len(patch_revs_to_process) > 1:
+              # If there are multiple patch_revs_to_process then we do not want
+              # want to invalidate a previous patch so throw an error.
+              raise gclient_utils.Error(
+                  'patch_rev %s is an ancestor of target_rev %s. This '
+                  'situation is unsupported when we need to apply multiple '
+                  'patch_revs: %s' % (pr, target_rev, patch_revs_to_process))
+            # If |patch_rev| is an ancestor of |target_rev|, check it out.
+            self._Capture(['checkout', pr])
+          else:
+            # If a change was uploaded on top of another change, which has
+            # already landed, one of the commits in the cherry-pick range will
+            # be redundant, since it has already landed and its changes
+            # incorporated in the tree.
+            # We pass '--keep-redundant-commits' to ignore those changes.
+            self._Capture(['cherry-pick', target_rev + '..' + pr,
+                           '--keep-redundant-commits'])
 
-    if file_list is not None:
-      file_list.extend(self._GetDiffFilenames(base_rev))
+        except subprocess2.CalledProcessError as e:
+          self.Print('Failed to apply patch.')
+          self.Print('Revision to patch was %r @ %r.' % (patch_repo, pr))
+          self.Print('Tried to cherrypick %r .. %r on top of %r.' % (
+              target_rev, pr, base_rev))
+          self.Print('Current dir is %r' % self.checkout_path)
+          self.Print('git returned non-zero exit status %s:\n%s' % (
+              e.returncode, e.stderr.decode('utf-8')))
+          # Print the current status so that developers know what changes caused
+          # the patch failure, since git cherry-pick doesn't show that
+          # information.
+          self.Print(self._Capture(['status']))
+          try:
+            self._Capture(['cherry-pick', '--abort'])
+          except subprocess2.CalledProcessError:
+            pass
+          raise
 
+      if file_list is not None:
+        file_list.extend(self._GetDiffFilenames(base_rev))
+
+    latest_commit = self.revinfo(None, None, None)
     if options.reset_patch_ref:
       self._Capture(['reset', '--soft', base_rev])
+    return latest_commit
+
+  def check_diff(self, previous_commit, files=None):
+    # type: (str, Optional[List[str]]) -> bool
+    """Check if a diff exists between the current commit and `previous_commit`.
+
+      Returns True if there were diffs or if an error was encountered.
+    """
+    cmd = ['diff', previous_commit, '--quiet']
+    if files:
+      cmd += ['--'] + files
+    try:
+      self._Capture(cmd)
+      return False
+    except subprocess2.CalledProcessError as e:
+      # git diff --quiet exits with 1 if there were diffs.
+      if e.returncode != 1:
+        self.Print('git returned non-zero exit status %s:\n%s' %
+                   (e.returncode, e.stderr.decode('utf-8')))
+      return True
 
   def update(self, options, args, file_list):
     """Runs git to update or transparently checkout the working copy.
@@ -981,11 +1080,7 @@ class GitWrapper(SCMWrapper):
       return
 
     if getattr(options, 'shallow', False):
-      # HACK(hinoka): These repositories should be super shallow.
-      if 'flash' in mirror.url:
-        depth = 10
-      else:
-        depth = 10000
+      depth = 10000
     else:
       depth = None
     mirror.populate(verbose=options.verbose,
@@ -1001,85 +1096,109 @@ class GitWrapper(SCMWrapper):
     leave HEAD detached as it makes future updates simpler -- in this case the
     user should first create a new branch or switch to an existing branch before
     making changes in the repo."""
+    in_cog_workspace = self._IsCog()
+
+    if self.print_outbuf:
+      print_stdout = True
+      filter_fn = None
+    else:
+      print_stdout = False
+      filter_fn = self.filter
+
     if not options.verbose:
       # git clone doesn't seem to insert a newline properly before printing
       # to stdout
       self.Print('')
-    cfg = gclient_utils.DefaultIndexPackConfig(url)
-    clone_cmd = cfg + ['clone', '--no-checkout', '--progress']
-    if self.cache_dir:
-      clone_cmd.append('--shared')
-    if options.verbose:
-      clone_cmd.append('--verbose')
-    clone_cmd.append(url)
+
     # If the parent directory does not exist, Git clone on Windows will not
     # create it, so we need to do it manually.
     parent_dir = os.path.dirname(self.checkout_path)
     gclient_utils.safe_makedirs(parent_dir)
 
-    template_dir = None
-    if hasattr(options, 'no_history') and options.no_history:
-      if gclient_utils.IsGitSha(revision):
-        # In the case of a subproject, the pinned sha is not necessarily the
-        # head of the remote branch (so we can't just use --depth=N). Instead,
-        # we tell git to fetch all the remote objects from SHA..HEAD by means of
-        # a template git dir which has a 'shallow' file pointing to the sha.
-        template_dir = tempfile.mkdtemp(
-            prefix='_gclient_gittmp_%s' % os.path.basename(self.checkout_path),
-            dir=parent_dir)
-        self._Run(['init', '--bare', template_dir], options, cwd=self._root_dir)
-        with open(os.path.join(template_dir, 'shallow'), 'w') as template_file:
-          template_file.write(revision)
-        clone_cmd.append('--template=' + template_dir)
-      else:
-        # Otherwise, we're just interested in the HEAD. Just use --depth.
-        clone_cmd.append('--depth=1')
+    if in_cog_workspace:
+      clone_cmd = ['citc', 'clone-repo', url, self.checkout_path]
+      clone_cmd.append(
+          gclient_utils.ExtractRefName(self.remote, revision) or revision)
+      try:
+        self._Run(clone_cmd,
+                  options,
+                  cwd=self._root_dir,
+                  retry=True,
+                  print_stdout=print_stdout,
+                  filter_fn=filter_fn)
+      except:
+        traceback.print_exc(file=self.out_fh)
+        raise
+      self._SetFetchConfig(options)
+    else:
+      cfg = gclient_utils.DefaultIndexPackConfig(url)
+      clone_cmd = cfg + ['clone', '--no-checkout', '--progress']
+      if self.cache_dir:
+        clone_cmd.append('--shared')
+      if options.verbose:
+        clone_cmd.append('--verbose')
+      clone_cmd.append(url)
 
-    tmp_dir = tempfile.mkdtemp(
-        prefix='_gclient_%s_' % os.path.basename(self.checkout_path),
-        dir=parent_dir)
-    try:
+      template_dir = None
+      if hasattr(options, 'no_history') and options.no_history:
+        if gclient_utils.IsGitSha(revision):
+          # In the case of a subproject, the pinned sha is not necessarily the
+          # head of the remote branch (so we can't just use --depth=N). Instead,
+          # we tell git to fetch all the remote objects from SHA..HEAD by means
+          # of a template git dir which has a 'shallow' file pointing to the
+          # sha.
+          template_dir = tempfile.mkdtemp(prefix='_gclient_gittmp_%s' %
+                                          os.path.basename(self.checkout_path),
+                                          dir=parent_dir)
+          self._Run(['init', '--bare', template_dir],
+                    options,
+                    cwd=self._root_dir)
+          with open(os.path.join(template_dir, 'shallow'),
+                    'w') as template_file:
+            template_file.write(revision)
+            clone_cmd.append('--template=' + template_dir)
+        else:
+          # Otherwise, we're just interested in the HEAD. Just use --depth.
+          clone_cmd.append('--depth=1')
+
+      tmp_dir = tempfile.mkdtemp(prefix='_gclient_%s_' %
+                                 os.path.basename(self.checkout_path),
+                                 dir=parent_dir)
       clone_cmd.append(tmp_dir)
-      if self.print_outbuf:
-        print_stdout = True
-        filter_fn = None
-      else:
-        print_stdout = False
-        filter_fn = self.filter
-      self._Run(clone_cmd, options, cwd=self._root_dir, retry=True,
-                print_stdout=print_stdout, filter_fn=filter_fn)
-      gclient_utils.safe_makedirs(self.checkout_path)
-      gclient_utils.safe_rename(os.path.join(tmp_dir, '.git'),
-                                os.path.join(self.checkout_path, '.git'))
-      # TODO(https://github.com/git-for-windows/git/issues/2569): Remove once
-      # fixed.
-      if sys.platform.startswith('win'):
-        try:
-          self._Run(['config', '--unset', 'core.worktree'], options,
-                    cwd=self.checkout_path)
-        except subprocess2.CalledProcessError:
-          pass
-    except:
-      traceback.print_exc(file=self.out_fh)
-      raise
-    finally:
-      if os.listdir(tmp_dir):
-        self.Print('_____ removing non-empty tmp dir %s' % tmp_dir)
-      gclient_utils.rmtree(tmp_dir)
-      if template_dir:
-        gclient_utils.rmtree(template_dir)
-    self._SetFetchConfig(options)
-    self._Fetch(options, prune=options.force)
-    revision = self._AutoFetchRef(options, revision)
-    remote_ref = scm.GIT.RefToRemoteRef(revision, self.remote)
-    self._Checkout(options, ''.join(remote_ref or revision), quiet=True)
+
+      try:
+        self._Run(clone_cmd,
+                  options,
+                  cwd=self._root_dir,
+                  retry=True,
+                  print_stdout=print_stdout,
+                  filter_fn=filter_fn)
+        gclient_utils.safe_makedirs(self.checkout_path)
+        gclient_utils.safe_rename(os.path.join(tmp_dir, '.git'),
+                                  os.path.join(self.checkout_path, '.git'))
+      except:
+        traceback.print_exc(file=self.out_fh)
+        raise
+      finally:
+        if os.listdir(tmp_dir):
+          self.Print('_____ removing non-empty tmp dir %s' % tmp_dir)
+        gclient_utils.rmtree(tmp_dir)
+        if template_dir:
+          gclient_utils.rmtree(template_dir)
+
+      self._SetFetchConfig(options)
+      self._Fetch(options, prune=options.force)
+      revision = self._AutoFetchRef(options, revision)
+      remote_ref = scm.GIT.RefToRemoteRef(revision, self.remote)
+      self._Checkout(options, ''.join(remote_ref or revision), quiet=True)
+
     if self._GetCurrentBranch() is None:
       # Squelch git's very verbose detached HEAD warning and use our own
       self.Print(
-        ('Checked out %s to a detached HEAD. Before making any commits\n'
-         'in this repo, you should use \'git checkout <branch>\' to switch to\n'
-         'an existing branch or use \'git checkout %s -b <branch>\' to\n'
-         'create a new branch for your work.') % (revision, self.remote))
+          ('Checked out %s to a detached HEAD. Before making any commits\n'
+           'in this repo, you should use \'git checkout <branch>\' to switch \n'
+           'to an existing branch or use \'git checkout %s -b <branch>\' to\n'
+           'create a new branch for your work.') % (revision, self.remote))
 
   def _AskForData(self, prompt, options):
     if options.jobs > 1:
@@ -1475,7 +1594,10 @@ class CipdRoot(object):
   @contextlib.contextmanager
   def _create_ensure_file(self):
     try:
-      contents = '$ParanoidMode CheckPresence\n\n'
+      contents = '$ParanoidMode CheckPresence\n'
+      # TODO(crbug/1329641): Remove once cipd packages have been updated
+      # to always be created in copy mode.
+      contents += '$OverrideInstallMode copy\n\n'
       for subdir, packages in sorted(self._packages_by_subdir.items()):
         contents += '@Subdir %s\n' % subdir
         for package in sorted(packages, key=lambda p: p.name):

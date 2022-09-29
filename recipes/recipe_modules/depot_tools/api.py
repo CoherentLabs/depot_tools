@@ -10,6 +10,10 @@ import contextlib
 from recipe_engine import recipe_api
 
 class DepotToolsApi(recipe_api.RecipeApi):
+  def __init__(self, **kwargs):
+    super(DepotToolsApi, self).__init__(**kwargs);
+    self._cipd_bin_setup_called = False
+
   @property
   def download_from_google_storage_path(self):
     return self.repo_resource('download_from_google_storage.py')

@@ -9,10 +9,12 @@ See gclient_smoketest.py for integration tests.
 """
 
 import copy
+import json
 import logging
 import ntpath
 import os
 import sys
+import six
 import unittest
 
 if sys.version_info.major == 2:
@@ -33,7 +35,6 @@ import gclient_eval
 import gclient_utils
 import gclient_scm
 from testing_support import trial_dir
-
 
 def write(filename, content):
   """Writes the content of a file and create the directories as needed."""
@@ -67,6 +68,9 @@ class SCMMock(object):
   def GetActualRemoteURL(self, _):
     return self.url
 
+  def revinfo(self, _, _a, _b):
+    return 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+
 
 class GclientTest(trial_dir.TestCase):
   def setUp(self):
@@ -78,6 +82,9 @@ class GclientTest(trial_dir.TestCase):
     self._old_createscm = gclient.gclient_scm.GitWrapper
     gclient.gclient_scm.GitWrapper = SCMMock
     SCMMock.unit_test = self
+
+    mock.patch('os.environ', {}).start()
+    self.addCleanup(mock.patch.stopall)
 
   def tearDown(self):
     self.assertEqual([], self._get_processed())
@@ -214,8 +221,12 @@ class GclientTest(trial_dir.TestCase):
     work_queue = gclient_utils.ExecutionQueue(options.jobs, None, False)
     for s in client.dependencies:
       work_queue.enqueue(s)
-    work_queue.flush({}, None, [], options=options, patch_refs={},
-                     target_branches={})
+    work_queue.flush({},
+                     None, [],
+                     options=options,
+                     patch_refs={},
+                     target_branches={},
+                     skip_sync_revisions={})
 
     return client.GetHooks(options)
 
@@ -236,6 +247,7 @@ class GclientTest(trial_dir.TestCase):
         should_recurse=False,
         relative=False,
         condition=None,
+        protocol='https',
         print_outbuf=True)
     self.assertEqual('proto://host/path@revision', d.url)
 
@@ -258,6 +270,7 @@ class GclientTest(trial_dir.TestCase):
             should_recurse=True,
             relative=False,
             condition=None,
+            protocol='https',
             print_outbuf=True),
         gclient.Dependency(
             parent=obj,
@@ -272,6 +285,7 @@ class GclientTest(trial_dir.TestCase):
             should_recurse=False,
             relative=False,
             condition=None,
+            protocol='https',
             print_outbuf=True),
       ],
       [])
@@ -290,6 +304,7 @@ class GclientTest(trial_dir.TestCase):
             should_recurse=False,
             relative=False,
             condition=None,
+            protocol='https',
             print_outbuf=True),
       ],
       [])
@@ -868,7 +883,8 @@ class GclientTest(trial_dir.TestCase):
     options, _ = gclient.OptionParser().parse_args([])
     obj = gclient.GClient.LoadCurrentConfig(options)
     obj.RunOnDeps('None', [])
-    self.assertEqual(
+    six.assertCountEqual(
+        self,
         [
           ('foo', 'svn://example.com/foo'),
           (os.path.join('foo', 'bar'), 'svn://example.com/override'),
@@ -1286,6 +1302,113 @@ class GclientTest(trial_dir.TestCase):
     self.assertIsInstance(dep, gclient.GitDependency)
     self.assertEqual('https://example.com/bar', dep.url)
 
+  def testParseDepsFile_FalseShouldSync_WithCustoms(self):
+    """Only process custom_deps/hooks when should_sync is False."""
+    solutions = [{
+        'name':
+        'chicken',
+        'url':
+        'https://example.com/chicken',
+        'deps_file':
+        '.DEPS.git',
+        'custom_deps': {
+            'override/foo': 'https://example.com/overridefoo@123',
+            'new/foo': 'https://example.come/newfoo@123'
+        },
+        'custom_hooks': [{
+            'name': 'overridehook',
+            'pattern': '.',
+            'action': ['echo', 'chicken']
+        }, {
+            'name': 'newhook',
+            'pattern': '.',
+            'action': ['echo', 'chick']
+        }],
+    }]
+    write('.gclient', 'solutions = %s' % repr(solutions))
+
+    deps = {
+        'override/foo': 'https://example.com/override.git@bar_version',
+        'notouch/foo': 'https://example.com/notouch.git@bar_version'
+    }
+    hooks = [{
+        'name': 'overridehook',
+        'pattern': '.',
+        'action': ['echo', 'cow']
+    }, {
+        'name': 'notouchhook',
+        'pattern': '.',
+        'action': ['echo', 'fail']
+    }]
+    pre_deps_hooks = [{
+        'name': 'runfirst',
+        'pattern': '.',
+        'action': ['echo', 'prehook']
+    }]
+    write(
+        os.path.join('chicken', 'DEPS'), 'deps = %s\n'
+        'hooks = %s\n'
+        'pre_deps_hooks = %s' % (repr(deps), repr(hooks), repr(pre_deps_hooks)))
+
+    expected_dep_names = ['override/foo', 'new/foo']
+    expected_hook_names = ['overridehook', 'newhook']
+
+    options, _ = gclient.OptionParser().parse_args([])
+    client = gclient.GClient.LoadCurrentConfig(options)
+    self.assertEqual(1, len(client.dependencies))
+    sol = client.dependencies[0]
+
+    sol._should_sync = False
+    sol.ParseDepsFile()
+    self.assertEqual(1, len(sol.pre_deps_hooks))
+    six.assertCountEqual(self, expected_dep_names,
+                          [d.name for d in sol.dependencies])
+    six.assertCountEqual(self, expected_hook_names,
+                          [h.name for h in sol._deps_hooks])
+
+  def testParseDepsFile_FalseShouldSync_NoCustoms(self):
+    """Parse DEPS when should_sync is False and no custom hooks/deps."""
+    solutions = [{
+        'name': 'chicken',
+        'url': 'https://example.com/chicken',
+        'deps_file': '.DEPS.git',
+    }]
+    write('.gclient', 'solutions = %s' % repr(solutions))
+
+    deps = {
+        'override/foo': 'https://example.com/override.git@bar_version',
+        'notouch/foo': 'https://example.com/notouch.git@bar_version'
+    }
+    hooks = [{
+        'name': 'overridehook',
+        'pattern': '.',
+        'action': ['echo', 'cow']
+    }, {
+        'name': 'notouchhook',
+        'pattern': '.',
+        'action': ['echo', 'fail']
+    }]
+    pre_deps_hooks = [{
+        'name': 'runfirst',
+        'pattern': '.',
+        'action': ['echo', 'prehook']
+    }]
+    write(
+        os.path.join('chicken', 'DEPS'), 'deps = %s\n'
+        'hooks = %s\n'
+        'pre_deps_hooks = %s' % (repr(deps), repr(hooks), repr(pre_deps_hooks)))
+
+    options, _ = gclient.OptionParser().parse_args([])
+    client = gclient.GClient.LoadCurrentConfig(options)
+    self.assertEqual(1, len(client.dependencies))
+    sol = client.dependencies[0]
+
+    sol._should_sync = False
+    sol.ParseDepsFile()
+    self.assertFalse(sol.pre_deps_hooks)
+    self.assertFalse(sol.dependencies)
+    self.assertFalse(sol._deps_hooks)
+
   def testSameDirAllowMultipleCipdDeps(self):
     """Verifies gclient allow multiple cipd deps under same directory."""
     parser = gclient.OptionParser()
@@ -1308,6 +1431,7 @@ class GclientTest(trial_dir.TestCase):
             should_recurse=True,
             relative=False,
             condition=None,
+            protocol='https',
             print_outbuf=True),
       ],
       [])
@@ -1429,6 +1553,78 @@ class GclientTest(trial_dir.TestCase):
     obj = gclient.GClient.LoadCurrentConfig(options)
     foo_sol = obj.dependencies[0]
     self.assertEqual('foo', foo_sol.FuzzyMatchUrl(['foo']))
+
+  def testEnforceSkipSyncRevisions_DepsPatchRefs(self):
+    """Patch_refs for any deps removes all skip_sync_revisions."""
+    write(
+        '.gclient', 'solutions = [\n'
+        '  { "name": "foo/src", "url": "https://example.com/foo",\n'
+        '    "deps_file" : ".DEPS.git",\n'
+        '  },\n'
+        ']')
+    write(
+        os.path.join('foo/src', 'DEPS'), 'deps = {\n'
+        '  "bar": "https://example.com/bar.git@bar_version",\n'
+        '}')
+    options, _ = gclient.OptionParser().parse_args([])
+    os.environ[gclient.PREVIOUS_SYNC_COMMITS] = json.dumps(
+        {'foo/src': '1234'})
+    client = gclient.GClient.LoadCurrentConfig(options)
+    patch_refs = {'foo/src': '1222', 'somedeps': '1111'}
+    self.assertEqual({}, client._EnforceSkipSyncRevisions(patch_refs))
+
+  def testEnforceSkipSyncRevisions_CustomVars(self):
+    """Changes in a sol's custom_vars removes its revisions."""
+    write(
+        '.gclient', 'solutions = [\n'
+        '  { "name": "samevars", "url": "https://example.com/foo",\n'
+        '    "deps_file" : ".DEPS.git",\n'
+        '    "custom_vars" : { "checkout_foo": "true" },\n'
+        '  },\n'
+        '  { "name": "diffvars", "url": "https://example.com/chicken",\n'
+        '    "deps_file" : ".DEPS.git",\n'
+        '    "custom_vars" : { "checkout_chicken": "true" },\n'
+        '  },\n'
+        '  { "name": "novars", "url": "https://example.com/cow",\n'
+        '    "deps_file" : ".DEPS.git",\n'
+        '  },\n'
+        ']')
+    write(
+        os.path.join('samevars', 'DEPS'), 'deps = {\n'
+        '  "bar": "https://example.com/bar.git@bar_version",\n'
+        '}')
+    write(
+        os.path.join('diffvars', 'DEPS'), 'deps = {\n'
+        '  "moo": "https://example.com/moo.git@moo_version",\n'
+        '}')
+    write(
+        os.path.join('novars', 'DEPS'), 'deps = {\n'
+        '  "poo": "https://example.com/poo.git@poo_version",\n'
+        '}')
+
+    previous_custom_vars = {
+        'samevars': {
+            'checkout_foo': 'true'
+        },
+        'diffvars': {
+            'checkout_chicken': 'false'
+        },
+    }
+    os.environ[gclient.PREVIOUS_CUSTOM_VARS] = json.dumps(previous_custom_vars)
+    options, _ = gclient.OptionParser().parse_args([])
+
+    patch_refs = {'samevars': '1222'}
+    previous_sync_commits = {'samevars': '10001',
+                             'diffvars': '10002',
+                             'novars': '10003'}
+    os.environ[
+        gclient.PREVIOUS_SYNC_COMMITS] = json.dumps(previous_sync_commits)
+
+    expected_skip_sync_revisions = {'samevars': '10001', 'novars': '10003'}
+
+    client = gclient.GClient.LoadCurrentConfig(options)
+    self.assertEqual(expected_skip_sync_revisions,
+                     client._EnforceSkipSyncRevisions(patch_refs))
 
 
 class MergeVarsTest(unittest.TestCase):
